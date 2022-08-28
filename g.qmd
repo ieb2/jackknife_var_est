@@ -1,0 +1,79 @@
+---
+title: "main_doc"
+format: pdf
+editor: visual
+pdf-engine: latex
+extra_dependencies: ["algorithm2e", "geometry", "amsmath"]
+---
+
+# Dependencies
+
+```{r}
+library(mice)
+library(MASS)
+library(furrr)
+library(purrr)
+library(progressr)
+```
+
+# Data Simulation
+
+## Defining data simulation function
+
+```{r}
+data_generator <- function(sample_size, seed, prop){
+  set.seed(seed)
+  cor_mat <- matrix(c(1, 0.5, 0.5, 
+                      0.5, 1, 0.5, 
+                      0.5, 0.5, 1), nrow = 3, ncol = 3)
+  
+  mean_vec <- c(1, 1, 1)
+  
+  covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
+  covariates$V3 <- ifelse(covariates$V3 > 0, 1, 0)
+  
+  outcome_variable <- 0 + 
+    0.32*covariates$V1 + 
+    0.67*covariates$V2 +  
+    0.43*covariates$V3 + 
+    0.50*covariates$V2*covariates$V3 + # Interaction btwn. V2&V3
+    rnorm(100,0,1)
+  
+  data_complete <- cbind(outcome_variable, covariates)
+  data_complete$V3 <- as.factor(data_complete$V3)
+  
+  data_w_missing <- suppressWarnings(ampute(data_complete, prop = prop, mech = "MAR", patterns = c(0, 1, 1, 1))$amp)
+  
+  data_w_missing$V3 <- as.factor(ifelse(data_w_missing$V3 == 1, 0, 1))
+  
+  # "outcome_variable" is an outcome variable with 30% MAR. Covariates are fully observed. 
+  
+  # The analysis model is outcome_variable ~ V1 + V2 + V3 + V2*V3 + epsilon 
+  # We are interested in estimating var(beta*V2)
+  
+  return(data_w_missing)
+}
+```
+
+## Creating dataframe of inputs
+
+```{r, eval = FALSE}
+set.seed(971423)
+N = 1e3 
+# 1e3 iterations of 4x4 unique conditions. 
+
+p_mis_vec <- c(rep(0.10, N), rep(0.30, N), rep(0.50, N), rep(0.70, N))
+
+sample_size_vec <- c(rep(1e2, N/4), rep(1e3, N/4), rep(1e4, N/4), rep(1e5, N/4))
+
+seed_vec <- seq.int(from = 1, to = N*4)
+
+sample_size_vec_repeated <- rep.int(sample_size_vec, 4)
+
+param_df <- data.frame(sample_size = sample_size_vec_repeated, prop = p_mis_vec, seed = seed_vec)
+
+plan(multisession, workers = parallel::detectCores()-1)
+
+sim_dfs <- future_pmap(param_df, data_generator, .progress = TRUE)
+
+```
