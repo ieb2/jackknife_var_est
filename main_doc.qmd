@@ -1,9 +1,7 @@
 ---
 title: "main_doc"
-format: pdf
+format: html
 editor: visual
-pdf-engine: latex
-extra_dependencies: ["algorithm2e", "geometry", "amsmath"]
 ---
 
 # Dependencies
@@ -13,7 +11,6 @@ library(mice)
 library(MASS)
 library(furrr)
 library(purrr)
-library(progressr)
 ```
 
 # Data Simulation
@@ -77,3 +74,138 @@ plan(multisession, workers = parallel::detectCores()-1)
 sim_dfs <- future_pmap(param_df, data_generator, .progress = TRUE)
 
 ```
+
+### Small dataset for general use 
+```{r}
+df_w_mis <- data_generator(1e2, 213, 0.20)
+
+subsamples <- vector("list", nrow(df_w_mis))
+for(i in 1:nrow(df_w_mis)){
+  subsamples[[i]] <- df_w_mis[-i,]}
+
+contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
+
+for(i in 1:length(subsamples)){
+  if(contains_na[[i]] == TRUE){
+    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm")
+  } else{
+    subsamples[[i]] <- subsamples[[i]]
+  }
+}
+
+# Estimated vars, need to add test in case there is non-mice object 
+analysis_vector<- vector("numeric", nrow(df_w_mis))
+for(i in 1:length(subsamples)){
+  sample_size <- nrow(complete(subsamples[[i]],1))
+  analysis_vector[[i]] <- subsamples[[i]] %>%
+    mice::complete("all") %>%
+    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
+    pool() %>%
+    broom::tidy() %>%
+    dplyr::filter(term == "V2") %>%
+    dplyr::select("std.error") %>%
+    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+    dplyr::select("variance") %>%
+    unlist()
+}
+
+# True var 
+true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
+  summary() %>%
+  tidy() %>%
+  dplyr::filter(term == "V2") %>%
+  dplyr::select("std.error") %>%
+  dplyr::mutate(variance = {std.error*{nrow(df_w_mis)^{1/2}}}^2) %>%
+  dplyr::select("variance") %>%
+  unlist()
+
+UB <- round(quantile(analysis_vector, probs = 1-0.05),2)
+LB <- round(quantile(analysis_vector, probs = 0.05),2)
+
+print(data.frame(UB,
+                 LB,
+                 "point_estimate" =  mean(analysis_vector),
+                 "true_variance" = true_var))
+```
+
+# Converting small example above to function for MC 
+```{r}
+jackknife_v1 <- function(df_w_mis, seed){
+  set.seed(seed)
+  subsamples <- vector("list", nrow(df_w_mis))
+for(i in 1:nrow(df_w_mis)){
+  subsamples[[i]] <- df_w_mis[-i,]}
+
+contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
+
+for(i in 1:length(subsamples)){
+  if(contains_na[[i]] == TRUE){
+    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm", print=FALSE)
+  } else{
+    subsamples[[i]] <- subsamples[[i]]
+  }
+}
+
+# Estimated vars 
+analysis_vector<- vector("numeric", nrow(df_w_mis))
+for(i in 1:length(subsamples)){
+  sample_size <- nrow(complete(subsamples[[i]],1))
+  analysis_vector[[i]] <- subsamples[[i]] %>%
+    mice::complete("all") %>%
+    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
+    pool() %>%
+    broom::tidy() %>%
+    dplyr::filter(term == "V2") %>%
+    dplyr::select("std.error") %>%
+    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+    dplyr::select("variance") %>%
+    unlist()
+}
+
+UB <- round(quantile(analysis_vector, probs = 1-0.05),2)
+LB <- round(quantile(analysis_vector, probs = 0.05),2)
+
+return(data.frame(UB,
+                 LB,
+                 "point_estimate" =  mean(analysis_vector)))
+}
+library(parallel)
+cl <- makeCluster(4)
+mc_res <- mclapply(mc.cores = 4, c(1:100), function(x) jackknife_v1(df_w_mis, seed = x))
+
+mc_res_df <- do.call(rbind, mc_res) 
+
+rownames(mc_res_df) <- NULL
+
+saveRDS(mc_res_df, "small_mc_res")
+
+df <- cbind(mc_res_df, true_var)
+
+round((sum(df$true_var < df$UB & df$true_var > df$LB) / nrow(df))*100,2)
+
+ggplot(data = df,
+           aes(point_estimate - true_var)) + 
+      geom_density(aes(y = ..density..)) + 
+      theme(axis.title.y = element_blank(), 
+            panel.spacing=unit(1.5,"lines")) + 
+      theme_bw() + 
+      theme(axis.title.y = element_blank(), 
+            panel.spacing=unit(1.5,"lines"), 
+            strip.text = element_text(
+              size = 9)) + 
+      xlab("Bias of variance estimator") + 
+      ggpubr::stat_overlay_normal_density(color = "red", linetype = "dashed")
+
+ggplot(df, aes(x = c(1:nrow(df)), y = point_estimate)) + 
+      geom_point(aes(color = "red")) + 
+      geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
+      coord_flip() + 
+      theme_bw() + 
+      labs(
+        x = latex2exp::TeX("$i^{th} dataset"), 
+        y = latex2exp::TeX("$\\widehat{\\sigma^2}")
+      ) + 
+      theme(legend.position="none") + 
+      geom_hline(yintercept = true_var)
+```
+
