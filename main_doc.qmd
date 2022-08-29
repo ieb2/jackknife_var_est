@@ -177,8 +177,6 @@ mc_res_df <- do.call(rbind, mc_res)
 
 rownames(mc_res_df) <- NULL
 
-saveRDS(mc_res_df, "small_mc_res")
-
 df <- cbind(mc_res_df, true_var)
 
 round((sum(df$true_var < df$UB & df$true_var > df$LB) / nrow(df))*100,2)
