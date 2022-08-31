@@ -6,11 +6,12 @@ editor: visual
 
 # Dependencies
 
-```{r}
+```{r, message=FALSE}
 library(mice)
 library(MASS)
 library(furrr)
 library(purrr)
+library(tidyverse)
 ```
 
 # Data Simulation
@@ -75,7 +76,8 @@ sim_dfs <- future_pmap(param_df, data_generator, .progress = TRUE)
 
 ```
 
-### Small dataset for general use 
+### Small dataset for general use
+
 ```{r}
 df_w_mis <- data_generator(1e2, 213, 0.20)
 
@@ -87,7 +89,7 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm")
+    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm", print=FALSE)
   } else{
     subsamples[[i]] <- subsamples[[i]]
   }
@@ -128,8 +130,9 @@ print(data.frame(UB,
                  "true_variance" = true_var))
 ```
 
-# Converting small example above to function for MC 
-```{r}
+# Converting small example above to function for MC
+
+```{r, eval = FALSE}
 jackknife_v1 <- function(df_w_mis, seed){
   set.seed(seed)
   subsamples <- vector("list", nrow(df_w_mis))
@@ -169,18 +172,24 @@ return(data.frame(UB,
                  LB,
                  "point_estimate" =  mean(analysis_vector)))
 }
+
+# Small MC for jackknife v_1
 library(parallel)
 cl <- makeCluster(4)
 mc_res <- mclapply(mc.cores = 4, c(1:100), function(x) jackknife_v1(df_w_mis, seed = x))
+```
 
-mc_res_df <- do.call(rbind, mc_res) 
+```{r, warning=FALSE}
+# Read in results from previous MC for jackknife v_1
+df <- readRDS("small_mc_res.rds") %>%
+  do.call(rbind, .) %>%
+  tibble::remove_rownames(.) %>%
+  cbind(., true_var)
 
-rownames(mc_res_df) <- NULL
-
-df <- cbind(mc_res_df, true_var)
-
+# CI coverage probability is very high, maybe consider traditional CI instead of percentile? 
 round((sum(df$true_var < df$UB & df$true_var > df$LB) / nrow(df))*100,2)
 
+# Somewhat anti-conservative, can we implement bias corrected estimator in the presence of missing data? -> Probably not. 
 ggplot(data = df,
            aes(point_estimate - true_var)) + 
       geom_density(aes(y = ..density..)) + 
@@ -207,3 +216,9 @@ ggplot(df, aes(x = c(1:nrow(df)), y = point_estimate)) +
       geom_hline(yintercept = true_var)
 ```
 
+# Current Issues/Updates
+  * Can we implement bias-corrected jackknife estimator? 
+    * Maybe yes, since point estimates do not change significantly w/ MICE. 
+  * Should we wait until we test method with uncongenial imputation to change C.I method from percentile to traditional jackknife? 
+  * Jackknife method runs into memory issues starting n=1e4, is this an issue? If so, would Rcpp or Julia be a possible solution? 
+  * Could you take a look at my grad school list? 
