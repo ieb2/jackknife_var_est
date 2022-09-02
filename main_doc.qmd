@@ -79,8 +79,7 @@ sim_dfs <- future_pmap(param_df, data_generator, .progress = TRUE)
 ### Small dataset for general use
 
 ```{r}
-df_w_mis <- data_generator(1e2, 213, 0.20)
-
+df_w_mis <- data_generator(500, 213, 0.30)
 subsamples <- vector("list", nrow(df_w_mis))
 for(i in 1:nrow(df_w_mis)){
   subsamples[[i]] <- df_w_mis[-i,]}
@@ -97,9 +96,17 @@ for(i in 1:length(subsamples)){
 
 # Estimated vars, need to add test in case there is non-mice object 
 analysis_vector<- vector("numeric", nrow(df_w_mis))
+
+is_mice <- vector("logical", length = length(subsamples))
+
+for(i in 1:length(subsamples)){
+  is_mice[[i]] <- ifelse(class(subsamples[[i]]) == "mids", TRUE, FALSE)
+}
+
 for(i in 1:length(subsamples)){
   sample_size <- nrow(complete(subsamples[[i]],1))
-  analysis_vector[[i]] <- subsamples[[i]] %>%
+  if(is_mice[[i]] == TRUE){
+    analysis_vector[[i]] <- subsamples[[i]] %>%
     mice::complete("all") %>%
     map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
     pool() %>%
@@ -109,7 +116,31 @@ for(i in 1:length(subsamples)){
     dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
     dplyr::select("variance") %>%
     unlist()
+  } else{
+    analysis_vector[[i]] <- subsamples[[i]] %>%
+      lm(formula = outcome_variable ~ V1 + V2 + V3 + V2:V3, data = .) %>%
+      broom::tidy() %>%
+      dplyr::filter(term == "V2") %>%
+      dplyr::select("std.error") %>%
+      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+      dplyr::select("variance") %>%
+      unlist()
+  }
+
 }
+
+mean_var <- c()
+
+est2 <- df_w_mis %>%
+  mice(seed = 123, print = FALSE) %>%
+  with(lm(outcome_variable ~ V1 + V2 + V3 + V2:V3)) %>%
+  pool() %>%
+  broom::tidy() %>%
+      dplyr::filter(term == "V2") %>%
+      dplyr::select("std.error") %>%
+      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+      dplyr::select("variance") %>%
+      unlist()
 
 # True var 
 true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
@@ -121,13 +152,31 @@ true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
   dplyr::select("variance") %>%
   unlist()
 
-UB <- round(quantile(analysis_vector, probs = 1-0.05),2)
-LB <- round(quantile(analysis_vector, probs = 0.05),2)
+mean_jack_estimate <- mean(analysis_vector)
 
-print(data.frame(UB,
+bias_of_jack_estimates <- (nrow(df_w_mis)-1)*(analysis_vector - est2)
+
+bias_corrected_jack_estimates <- analysis_vector - bias_of_jack_estimates
+
+
+# quantile ci is  VERY wide, using traditional. 
+UB <- round(quantile(bias_corrected_jack_estimates, probs = 1-0.05),5)
+LB <- round(quantile(bias_corrected_jack_estimates, probs = 0.05),5)
+
+# calculating variance 
+jack_var <- ((nrow(df_w_mis)-1)/(nrow(df_w_mis)))*
+  sum({bias_corrected_jack_estimates-mean(bias_corrected_jack_estimates)}^2)
+
+UB <- mean(bias_corrected_jack_estimates) + 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
+UB <- mean(bias_corrected_jack_estimates) - 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
+
+return(data.frame(UB,
                  LB,
-                 "point_estimate" =  mean(analysis_vector),
-                 "true_variance" = true_var))
+                 "point_estimate" =  mean(bias_corrected_jack_estimates),
+                 "true_variance" = true_var) %>%
+        tibble::remove_rownames(.)
+        )
+}
 ```
 
 # Converting small example above to function for MC
@@ -179,17 +228,118 @@ cl <- makeCluster(4)
 mc_res <- mclapply(mc.cores = 4, c(1:100), function(x) jackknife_v1(df_w_mis, seed = x))
 ```
 
+```{r}
+jackknife_v1_bias_corrected <- function(df_w_mis, seed){
+  set.seed(seed)
+  subsamples <- vector("list", nrow(df_w_mis))
+for(i in 1:nrow(df_w_mis)){
+  subsamples[[i]] <- df_w_mis[-i,]}
+
+contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
+
+for(i in 1:length(subsamples)){
+  if(contains_na[[i]] == TRUE){
+    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm", print=FALSE)
+  } else{
+    subsamples[[i]] <- subsamples[[i]]
+  }
+}
+
+# Estimated vars, need to add test in case there is non-mice object 
+analysis_vector<- vector("numeric", nrow(df_w_mis))
+
+is_mice <- vector("logical", length = length(subsamples))
+
+for(i in 1:length(subsamples)){
+  is_mice[[i]] <- ifelse(class(subsamples[[i]]) == "mids", TRUE, FALSE)
+}
+
+for(i in 1:length(subsamples)){
+  sample_size <- nrow(complete(subsamples[[i]],1))
+  if(is_mice[[i]] == TRUE){
+    analysis_vector[[i]] <- subsamples[[i]] %>%
+    mice::complete("all") %>%
+    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
+    pool() %>%
+    broom::tidy() %>%
+    dplyr::filter(term == "V2") %>%
+    dplyr::select("std.error") %>%
+    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+    dplyr::select("variance") %>%
+    unlist()
+  } else{
+    analysis_vector[[i]] <- subsamples[[i]] %>%
+      lm(formula = outcome_variable ~ V1 + V2 + V3 + V2:V3, data = .) %>%
+      broom::tidy() %>%
+      dplyr::filter(term == "V2") %>%
+      dplyr::select("std.error") %>%
+      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+      dplyr::select("variance") %>%
+      unlist()
+  }
+
+}
+
+mean_jack_estimate <- mean(analysis_vector)
+
+bias_of_jack_estimates <- (nrow(df_w_mis)-1)*(mean_jack_estimate - analysis_vector)
+
+bias_corrected_jack_estimates <- analysis_vector - bias_of_jack_estimates
+# True var 
+true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
+  summary() %>%
+  tidy() %>%
+  dplyr::filter(term == "V2") %>%
+  dplyr::select("std.error") %>%
+  dplyr::mutate(variance = {std.error*{nrow(df_w_mis)^{1/2}}}^2) %>%
+  dplyr::select("variance") %>%
+  unlist()
+
+# quantile ci is  VERY wide, using traditional. 
+#UB <- round(quantile(bias_corrected_jack_estimates, probs = 1-0.05),5)
+#LB <- round(quantile(bias_corrected_jack_estimates, probs = 0.05),5)
+
+# calculating variance 
+jack_var <- ((nrow(df_w_mis)-1)/(nrow(df_w_mis)))*
+  sum({bias_corrected_jack_estimates-mean(bias_corrected_jack_estimates)}^2)
+
+UB <- mean(bias_corrected_jack_estimates) + 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
+UB <- mean(bias_corrected_jack_estimates) - 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
+
+return(data.frame(UB,
+                 LB,
+                 "point_estimate" =  mean(bias_corrected_jack_estimates),
+                 "true_variance" = true_var) %>%
+        tibble::remove_rownames(.)
+        )
+}
+
+# Small MC for jackknife v_1_bias_corrected 
+# This code works for unix devices, but not for windows. 
+library(parallel)
+cl <- makeCluster(detectCores())
+mc_res <- mclapply(mc.cores = detectCores(), c(1:50), function(x) jackknife_v1_bias_corrected(df_w_mis, seed = x))
+```
+
+```{r}
+# Code below is appt. for windows machines, but slower than the one above. 
+library(future.apply)
+plan(multisession)
+
+mc_res <- future_lapply(c(1:50), function(x) jackknife_v1_bias_corrected(df_w_mis, seed = x))
+
+saveRDS(mc_res, "mc_res_v1_bias_corrected.rds")
+```
+
 ```{r, warning=FALSE}
-# Read in results from previous MC for jackknife v_1
-df <- readRDS("small_mc_res.rds") %>%
+# Read in results from previous MC for jackknife v_1_bias_corrected
+df <- readRDS("mc_res_v1_bias_corrected.rds") %>%
   do.call(rbind, .) %>%
-  tibble::remove_rownames(.) %>%
-  cbind(., true_var)
+  tibble::remove_rownames(.)
 
 # CI coverage probability is very high, maybe consider traditional CI instead of percentile? 
 round((sum(df$true_var < df$UB & df$true_var > df$LB) / nrow(df))*100,2)
 
-# Somewhat anti-conservative, can we implement bias corrected estimator in the presence of missing data? -> Probably not. 
 ggplot(data = df,
            aes(point_estimate - true_var)) + 
       geom_density(aes(y = ..density..)) + 
@@ -213,12 +363,5 @@ ggplot(df, aes(x = c(1:nrow(df)), y = point_estimate)) +
         y = latex2exp::TeX("$\\widehat{\\sigma^2}")
       ) + 
       theme(legend.position="none") + 
-      geom_hline(yintercept = true_var)
+      geom_hline(yintercept = df$true_variance)
 ```
-
-# Current Issues/Updates
-  * Can we implement bias-corrected jackknife estimator? 
-    * Maybe yes, since point estimates do not change significantly w/ MICE. 
-  * Should we wait until we test method with uncongenial imputation to change C.I method from percentile to traditional jackknife? 
-  * Jackknife method runs into memory issues starting n=1e4, is this an issue? If so, would Rcpp or Julia be a possible solution? 
-  * Could you take a look at my grad school list? 
