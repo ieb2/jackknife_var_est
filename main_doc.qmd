@@ -19,7 +19,8 @@ library(tidyverse)
 ## Defining data simulation function
 
 ```{r}
-data_generator <- function(sample_size, seed, prop){
+data_generator <- function(sample_size, seed, prop, desired_data){
+  
   set.seed(seed)
   cor_mat <- matrix(c(1, 0.5, 0.5, 
                       0.5, 1, 0.5, 
@@ -30,12 +31,11 @@ data_generator <- function(sample_size, seed, prop){
   covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
   covariates$V3 <- ifelse(covariates$V3 > 0, 1, 0)
   
-  outcome_variable <- 0 + 
-    0.32*covariates$V1 + 
-    0.67*covariates$V2 +  
-    0.43*covariates$V3 + 
-    0.50*covariates$V2*covariates$V3 + # Interaction btwn. V2&V3
-    rnorm(100,0,1)
+  outcome_variable <- 1 + 
+    0.2*covariates$V1 + 
+    0.5*covariates$V2 +  
+    0.8*covariates$V3 +
+    rlnorm(sample_size,0,1)
   
   data_complete <- cbind(outcome_variable, covariates)
   data_complete$V3 <- as.factor(data_complete$V3)
@@ -44,12 +44,7 @@ data_generator <- function(sample_size, seed, prop){
   
   data_w_missing$V3 <- as.factor(ifelse(data_w_missing$V3 == 1, 0, 1))
   
-  # "outcome_variable" is an outcome variable with 30% MAR. Covariates are fully observed. 
-  
-  # The analysis model is outcome_variable ~ V1 + V2 + V3 + V2*V3 + epsilon 
-  # We are interested in estimating var(beta*V2)
-  
-  return(data_w_missing)
+  return(get(desired_data))
 }
 ```
 
@@ -73,13 +68,23 @@ param_df <- data.frame(sample_size = sample_size_vec_repeated, prop = p_mis_vec,
 plan(multisession, workers = parallel::detectCores()-1)
 
 sim_dfs <- future_pmap(param_df, data_generator, .progress = TRUE)
-
 ```
 
 ### Small dataset for general use
 
 ```{r}
-df_w_mis <- data_generator(500, 213, 0.30)
+set.seed(123)
+df_complete <- data_generator(1000, 213, 0.30, "data_complete")
+
+qqnorm(df_complete$outcome_variable, pch = 0.1, frame = FALSE)
+qqline(df_complete$outcome_variable, col = "steelblue", lwd = 2)
+
+df_w_mis <- data_generator(1000, 213, 0.01, "data_w_missing")
+```
+
+# Estimator Code 
+```{r}
+# Creates n subsamples of n = n-1 
 subsamples <- vector("list", nrow(df_w_mis))
 for(i in 1:nrow(df_w_mis)){
   subsamples[[i]] <- df_w_mis[-i,]}
@@ -94,254 +99,93 @@ for(i in 1:length(subsamples)){
   }
 }
 
-# Estimated vars, need to add test in case there is non-mice object 
-analysis_vector<- vector("numeric", nrow(df_w_mis))
-
+# Logical test to determine presence of MICE objects 
 is_mice <- vector("logical", length = length(subsamples))
 
 for(i in 1:length(subsamples)){
   is_mice[[i]] <- ifelse(class(subsamples[[i]]) == "mids", TRUE, FALSE)
 }
 
+# Applies appt analysis depending on type 
+analysis_list <- vector("list", length = length(subsamples))
+
 for(i in 1:length(subsamples)){
   sample_size <- nrow(complete(subsamples[[i]],1))
   if(is_mice[[i]] == TRUE){
-    analysis_vector[[i]] <- subsamples[[i]] %>%
+    analysis_list[[i]] <- subsamples[[i]] %>%
     mice::complete("all") %>%
-    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
+    map(lm, formula = outcome_variable ~ V1 + V2 + V3) %>%
     pool() %>%
     broom::tidy() %>%
     dplyr::filter(term == "V2") %>%
-    dplyr::select("std.error") %>%
     dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-    dplyr::select("variance") %>%
-    unlist()
-  } else{
-    analysis_vector[[i]] <- subsamples[[i]] %>%
-      lm(formula = outcome_variable ~ V1 + V2 + V3 + V2:V3, data = .) %>%
+    dplyr::select(estimate, variance) 
+    } else{
+    analysis_list[[i]] <- subsamples[[i]] %>%
+      lm(formula = outcome_variable ~ V1 + V2 + V3 , data = .) %>%
       broom::tidy() %>%
       dplyr::filter(term == "V2") %>%
-      dplyr::select("std.error") %>%
       dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select("variance") %>%
-      unlist()
+      dplyr::select(estimate, variance)
   }
 
 }
 
-mean_var <- c()
+# Flattens resulting list
+analysis_df <- do.call(rbind, analysis_list)
 
-est2 <- df_w_mis %>%
-  mice(seed = 123, print = FALSE) %>%
-  with(lm(outcome_variable ~ V1 + V2 + V3 + V2:V3)) %>%
-  pool() %>%
+# Jackknife point estimate
+point_estimate_jackknife <- mean(analysis_df$estimate)
+
+UB <- quantile(analysis_df$estimate, 0.95)
+LB <- quantile(analysis_df$estimate, 0.05)
+
+print(data.frame("point_estimate" = point_estimate_jackknife, 
+                 "UB" = UB, 
+                 "LB" = LB) %>% tibble::remove_rownames())
+
+# Estimate that is likely biased, since it does not use resampling 
+estimated_value <- df_w_mis %>%
+  mice(seed = 123, print = FALSE, method = "pmm") %>%
+  complete("all") %>%
+  lapply(lm, formula = outcome_variable ~ V1 + V2 + V3) %>%
+  pool %>%
   broom::tidy() %>%
-      dplyr::filter(term == "V2") %>%
-      dplyr::select("std.error") %>%
-      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select("variance") %>%
-      unlist()
-
-# True var 
-true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
-  summary() %>%
-  tidy() %>%
   dplyr::filter(term == "V2") %>%
-  dplyr::select("std.error") %>%
-  dplyr::mutate(variance = {std.error*{nrow(df_w_mis)^{1/2}}}^2) %>%
-  dplyr::select("variance") %>%
-  unlist()
-
-mean_jack_estimate <- mean(analysis_vector)
-
-bias_of_jack_estimates <- (nrow(df_w_mis)-1)*(analysis_vector - est2)
-
-bias_corrected_jack_estimates <- analysis_vector - bias_of_jack_estimates
-
-
-# quantile ci is  VERY wide, using traditional. 
-UB <- round(quantile(bias_corrected_jack_estimates, probs = 1-0.05),5)
-LB <- round(quantile(bias_corrected_jack_estimates, probs = 0.05),5)
-
-# calculating variance 
-jack_var <- ((nrow(df_w_mis)-1)/(nrow(df_w_mis)))*
-  sum({bias_corrected_jack_estimates-mean(bias_corrected_jack_estimates)}^2)
-
-UB <- mean(bias_corrected_jack_estimates) + 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
-UB <- mean(bias_corrected_jack_estimates) - 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
-
-return(data.frame(UB,
-                 LB,
-                 "point_estimate" =  mean(bias_corrected_jack_estimates),
-                 "true_variance" = true_var) %>%
-        tibble::remove_rownames(.)
-        )
-}
+  dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
+  dplyr::select(estimate, variance)
 ```
 
-# Converting small example above to function for MC
+# Small MC Codes 
 
-```{r, eval = FALSE}
-jackknife_v1 <- function(df_w_mis, seed){
-  set.seed(seed)
-  subsamples <- vector("list", nrow(df_w_mis))
-for(i in 1:nrow(df_w_mis)){
-  subsamples[[i]] <- df_w_mis[-i,]}
-
-contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
-
-for(i in 1:length(subsamples)){
-  if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm", print=FALSE)
-  } else{
-    subsamples[[i]] <- subsamples[[i]]
-  }
-}
-
-# Estimated vars 
-analysis_vector<- vector("numeric", nrow(df_w_mis))
-for(i in 1:length(subsamples)){
-  sample_size <- nrow(complete(subsamples[[i]],1))
-  analysis_vector[[i]] <- subsamples[[i]] %>%
-    mice::complete("all") %>%
-    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
-    pool() %>%
-    broom::tidy() %>%
-    dplyr::filter(term == "V2") %>%
-    dplyr::select("std.error") %>%
-    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-    dplyr::select("variance") %>%
-    unlist()
-}
-
-UB <- round(quantile(analysis_vector, probs = 1-0.05),2)
-LB <- round(quantile(analysis_vector, probs = 0.05),2)
-
-return(data.frame(UB,
-                 LB,
-                 "point_estimate" =  mean(analysis_vector)))
-}
-
-# Small MC for jackknife v_1
+```{r}
 library(parallel)
 cl <- makeCluster(4)
-mc_res <- mclapply(mc.cores = 4, c(1:100), function(x) jackknife_v1(df_w_mis, seed = x))
-```
+mc_res <- mclapply(mc.cores = 4, c(1:10), function(x) jackknife_estimator(df_w_mis, seed = x))
 
-```{r}
-jackknife_v1_bias_corrected <- function(df_w_mis, seed){
-  set.seed(seed)
-  subsamples <- vector("list", nrow(df_w_mis))
-for(i in 1:nrow(df_w_mis)){
-  subsamples[[i]] <- df_w_mis[-i,]}
-
-contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
-
-for(i in 1:length(subsamples)){
-  if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], m = 5, method = "pmm", print=FALSE)
-  } else{
-    subsamples[[i]] <- subsamples[[i]]
-  }
-}
-
-# Estimated vars, need to add test in case there is non-mice object 
-analysis_vector<- vector("numeric", nrow(df_w_mis))
-
-is_mice <- vector("logical", length = length(subsamples))
-
-for(i in 1:length(subsamples)){
-  is_mice[[i]] <- ifelse(class(subsamples[[i]]) == "mids", TRUE, FALSE)
-}
-
-for(i in 1:length(subsamples)){
-  sample_size <- nrow(complete(subsamples[[i]],1))
-  if(is_mice[[i]] == TRUE){
-    analysis_vector[[i]] <- subsamples[[i]] %>%
-    mice::complete("all") %>%
-    map(lm, formula = outcome_variable ~ V1 + V2 + V3 + V2:V3) %>%
-    pool() %>%
-    broom::tidy() %>%
-    dplyr::filter(term == "V2") %>%
-    dplyr::select("std.error") %>%
-    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-    dplyr::select("variance") %>%
-    unlist()
-  } else{
-    analysis_vector[[i]] <- subsamples[[i]] %>%
-      lm(formula = outcome_variable ~ V1 + V2 + V3 + V2:V3, data = .) %>%
-      broom::tidy() %>%
-      dplyr::filter(term == "V2") %>%
-      dplyr::select("std.error") %>%
-      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select("variance") %>%
-      unlist()
-  }
-
-}
-
-mean_jack_estimate <- mean(analysis_vector)
-
-bias_of_jack_estimates <- (nrow(df_w_mis)-1)*(mean_jack_estimate - analysis_vector)
-
-bias_corrected_jack_estimates <- analysis_vector - bias_of_jack_estimates
-# True var 
-true_var <- lm(outcome_variable ~ V1 + V2 + V3 + V2:V3, data = df_w_mis) %>%
-  summary() %>%
-  tidy() %>%
-  dplyr::filter(term == "V2") %>%
-  dplyr::select("std.error") %>%
-  dplyr::mutate(variance = {std.error*{nrow(df_w_mis)^{1/2}}}^2) %>%
-  dplyr::select("variance") %>%
-  unlist()
-
-# quantile ci is  VERY wide, using traditional. 
-#UB <- round(quantile(bias_corrected_jack_estimates, probs = 1-0.05),5)
-#LB <- round(quantile(bias_corrected_jack_estimates, probs = 0.05),5)
-
-# calculating variance 
-jack_var <- ((nrow(df_w_mis)-1)/(nrow(df_w_mis)))*
-  sum({bias_corrected_jack_estimates-mean(bias_corrected_jack_estimates)}^2)
-
-UB <- mean(bias_corrected_jack_estimates) + 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
-UB <- mean(bias_corrected_jack_estimates) - 1.96(sqrt(jack_var)/sqrt(nrow(df_w_mis)))
-
-return(data.frame(UB,
-                 LB,
-                 "point_estimate" =  mean(bias_corrected_jack_estimates),
-                 "true_variance" = true_var) %>%
-        tibble::remove_rownames(.)
-        )
-}
-
-# Small MC for jackknife v_1_bias_corrected 
-# This code works for unix devices, but not for windows. 
-library(parallel)
-cl <- makeCluster(detectCores())
-mc_res <- mclapply(mc.cores = detectCores(), c(1:50), function(x) jackknife_v1_bias_corrected(df_w_mis, seed = x))
-```
-
-```{r}
 # Code below is appt. for windows machines, but slower than the one above. 
 library(future.apply)
 plan(multisession)
 
 mc_res <- future_lapply(c(1:50), function(x) jackknife_v1_bias_corrected(df_w_mis, seed = x))
 
+# Saving is same for both
 saveRDS(mc_res, "mc_res_v1_bias_corrected.rds")
 ```
 
+# Analysis of Results 
 ```{r, warning=FALSE}
 # Read in results from previous MC for jackknife v_1_bias_corrected
-df <- readRDS("mc_res_v1_bias_corrected.rds") %>%
+df <- mc_res %>%
   do.call(rbind, .) %>%
-  tibble::remove_rownames(.)
+  tibble::remove_rownames(.) %>%
+  cbind()
 
 # CI coverage probability is very high, maybe consider traditional CI instead of percentile? 
 round((sum(df$true_var < df$UB & df$true_var > df$LB) / nrow(df))*100,2)
 
 ggplot(data = df,
-           aes(point_estimate - true_var)) + 
+           aes(point_estimate - true_var$estimate)) + 
       geom_density(aes(y = ..density..)) + 
       theme(axis.title.y = element_blank(), 
             panel.spacing=unit(1.5,"lines")) + 
