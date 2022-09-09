@@ -34,7 +34,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     0.2*covariates$V1 + 
     0.5*covariates$V2 +  
     0.8*covariates$V3 +
-    rlnorm(sample_size,0,1)
+    rnorm(sample_size,0,1)
   
   data_complete <- cbind(outcome_variable, covariates)
   data_complete$V3 <- as.factor(data_complete$V3)
@@ -52,7 +52,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 ```{r, eval = FALSE}
 set.seed(971423)
 N = 100
-sample_size = 100
+sample_size = 1000
 seed = 1:N
 prop = 0.3
 desired_data = "data_w_missing"
@@ -195,7 +195,7 @@ rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
 ```{r}
 set.seed(971423)
 N = 100
-sample_size = 100
+sample_size = 1000
 seed = 1:N
 prop = 0.3
 desired_data = "data_complete"
@@ -277,3 +277,12 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
       #geom_hline(yintercept = df$true_variance)
 ```
 
+# Updates 
+  * Are OUR texts good? 
+  * Can we use CSP abstract for OUR? 
+  * Estimator has very low variance, which leads to undercoverage but isn't biased.
+    * Came across bias-variance tradeoff, but doesn't seem applicable. 
+  * Jackknife has unreasonably poor coverage, how could it be doing much worse than bootstrap? 
+  * Is it possible that jackknife requires a much larger sample size to work to the point where it is no longer computationally efficient? 
+    * It seems to work fine with mtcars dataset (looking at mean of mpg). 
+  * When working with missing data, what is the true variance of a regression model? 
