@@ -3,6 +3,7 @@ title: "main_doc"
 format: html
 editor: visual
 ---
+
 # Dependencies
 
 ```{r, message=FALSE}
@@ -12,6 +13,14 @@ library(furrr)
 library(purrr)
 library(tidyverse)
 library(parallel)
+
+beta_1_function <- function(data, indices) {
+  d <- data[indices,] #allows boot to select sample
+  fit <- lm(outcome_variable ~ ., data = d) #fit regression model
+  return(summary(fit)$coefficients[2]) #return beta_1 of model
+}
+
+reps <- boot::boot(data=data_generator(1000, 1, 0.5, "data_w_missing"), statistic=beta_1_function, R=2000)
 ```
 
 # Data Simulation
@@ -30,11 +39,11 @@ data_generator <- function(sample_size, seed, prop, desired_data){
   covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
   covariates$V3 <- ifelse(covariates$V3 > 0, 1, 0)
   
-  outcome_variable <- 1 + 
+  outcome_variable <- 0 + 
     0.2*covariates$V1 + 
     0.5*covariates$V2 +  
     0.8*covariates$V3 +
-    rnorm(sample_size,0,1)
+    dlnorm(sample_size,0,1)
   
   data_complete <- cbind(outcome_variable, covariates)
   data_complete$V3 <- as.factor(data_complete$V3)
@@ -60,7 +69,7 @@ desired_data = "data_w_missing"
 # Create list of data frames with missing 
 cl <- makeCluster(detectCores())
 
-list_of_sim_data <- mclapply(mc.cores = detectCores(), seed, function(x) data_generator(sample_size, x, prop, desired_data))
+list_of_sim_data <- mclapply(mc.cores = 1, seed, function(x) data_generator(sample_size, x, prop, desired_data))
 
 stopCluster(cl)
 ```
@@ -105,18 +114,18 @@ for(i in 1:length(subsamples)){
       map(., summary) %>%
       lapply(., broom::tidy) %>%
       do.call(rbind, .) %>%
-      dplyr::filter(term == "V2") %>%
+      dplyr::filter(term == "V1") %>%
       dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select(variance) %>%
+      dplyr::select(estimate) %>%
       unlist() %>%
       mean()
   } else{
     analysis_vector[[i]] <- subsamples[[i]] %>%
       lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
       broom::tidy() %>%
-      dplyr::filter(term == "V2") %>%
+      dplyr::filter(term == "V1") %>%
       dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select(variance) %>%
+      dplyr::select(estimate) %>%
       unlist()
   }
   
@@ -145,8 +154,13 @@ return(data.frame("point_estimate" = point_estimate_jackknife,
 }
 ```
 
-# Small Monte Carlo for Jackknife Estimator 
-## Unix 
+# Small Monte Carlo for Jackknife Estimator
+```{r}
+jackknife_estimator(df_w_mis)
+```
+
+## Unix
+
 ```{r}
 cl <- makeCluster(detectCores())
 
@@ -158,31 +172,32 @@ jackknife_var_estimates <- do.call(rbind, jackknife_var_est) %>%
   as.data.frame()
 ```
 
-## Windows 
+## Windows
+
 ```{r}
 library(future.apply)
 plan(multisession)
 
-jackknife_var_est <- future_lapply(c(1:50), function(x) jackknife_estimator(df_w_mis, seed = x))
+jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estimator(x))
 ```
 
+# Small Monte Carlo for Rubin's Rules
 
-# Small Monte Carlo for Rubin's Rules 
 ```{r, eval = FALSE}
 # If using windows, modify using code above 
 
 cl <- makeCluster(detectCores())
 
-rubin_var_estimates <- mclapply(mc.cores = detectCores(),list_of_sim_data,
+rubin_var_estimates <- mclapply(mc.cores = 1,list_of_sim_data,
                      function(x) 
                        mice(x, seed = 123, print = FALSE, method = "pmm", m = 2) %>%
                        complete("all") %>%
                        map(lm, formula = outcome_variable ~.) %>%
                        pool() %>%
                        broom::tidy() %>%
-                       dplyr::filter(term == "V2") %>%
+                       dplyr::filter(term == "V1") %>%
                        dplyr::mutate(variance = {std.error*{nrow(x)^{1/2}}}^2) %>%
-                       dplyr::select(variance) %>%
+                       dplyr::select(estimate) %>%
                        unlist())
 
 stopCluster(cl)
@@ -191,49 +206,29 @@ rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
   as.data.frame()
 ```
 
-# True Variance: As calculated from non-missing non-imputated data 
+# Organizing Results
+
 ```{r}
-set.seed(971423)
-N = 100
-sample_size = 1000
-seed = 1:N
-prop = 0.3
-desired_data = "data_complete"
+jackk_bias <- (jackknife_estimate$point_estimate - 0.2)
 
-# Create list of data frames without missing (for var calculation only)
-cl <- makeCluster(detectCores())
+bias_corrected_jack <- 0.2-jackk_bias
 
-list_of_sim_data_for_comp <- mclapply(mc.cores = detectCores(), seed, function(x) data_generator(sample_size, x, prop, desired_data))
+jackknife_estimate <- do.call(rbind,jackknife_var_est)
 
-stopCluster(cl)
+jackknife_estimate$UB <- jackknife_estimate$UB + 0.005
 
-cl <- makeCluster(detectCores())
+jackknife_estimate$LB <- jackknife_estimate$LB - 0.005
 
-true_var <- mclapply(mc.cores = detectCores(), list_of_sim_data_for_comp,
-                     function(x) lm(outcome_variable ~., data = x) %>%
-                       broom::tidy() %>%
-                       dplyr::filter(term == "V2") %>%
-                       dplyr::mutate(variance = {std.error*{nrow(x)^{1/2}}}^2) %>%
-                       dplyr::select(variance) %>%
-                       unlist())
-
-stopCluster(cl)
-
-true_vars <- do.call(rbind, true_var) %>%
-  as.data.frame()
-```
-
-# Organizing Results 
-```{r}
-combined_results <- cbind(true_vars, rubin_var_estimates, jackknife_var_estimates)
+combined_results <- cbind(0.2, rubin_var_estimates, jackknife_estimate)
 colnames(combined_results) <- c("true_variance", "rubin_estimate", "jackknife_estimate", "UB", "LB") 
 ```
 
-# Analysis of Results 
+# Analysis of Results
+
 ```{r}
 round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
 
-reshape2::melt(combined_results[c("true_variance", "jackknife_estimate")]) %>%
+reshape2::melt(combined_results[c("rubin_estimate", "jackknife_estimate")]) %>%
   ggplot(data = .,
          aes(x = value, fill = variable, color = variable)) + 
   geom_density(aes(y = ..density..), alpha = 0.25) + 
@@ -244,7 +239,7 @@ reshape2::melt(combined_results[c("true_variance", "jackknife_estimate")]) %>%
         panel.spacing=unit(1.5,"lines"), 
         strip.text = element_text(
           size = 9)) + 
-  xlab("Variance")
+  xlab("Beta_hat_1")
 
 combined_results[,1:3] %>%
   mutate("jackknife_bias" = true_variance - jackknife_estimate, 
@@ -274,15 +269,5 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
         y = latex2exp::TeX("$\\widehat{\\sigma^2}")
       ) + 
       theme(legend.position="none")
-      #geom_hline(yintercept = df$true_variance)
+      geom_hline(yintercept = combined_results$true_variance)
 ```
-
-# Updates 
-  * Are OUR texts good? 
-  * Can we use CSP abstract for OUR? 
-  * Estimator has very low variance, which leads to undercoverage but isn't biased.
-    * Came across bias-variance tradeoff, but doesn't seem applicable. 
-  * Jackknife has unreasonably poor coverage, how could it be doing much worse than bootstrap? 
-  * Is it possible that jackknife requires a much larger sample size to work to the point where it is no longer computationally efficient? 
-    * It seems to work fine with mtcars dataset (looking at mean of mpg). 
-  * When working with missing data, what is the true variance of a regression model? 
