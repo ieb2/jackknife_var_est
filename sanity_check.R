@@ -6,9 +6,8 @@ small_sanity_check <- lapply(c(1:100), function(x) {
   estimated_var <- sapply(imps, function(x)
     lm(formula = outcome_variable ~ V1 + V2 + V3, data = x) %>%
       broom::tidy() %>%
-      dplyr::filter(term == "V2") %>%
-      dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-      dplyr::select(variance) %>%
+      dplyr::filter(term == "V1") %>%
+      dplyr::select(estimate) %>%
       unlist()
   )
   estimated_var_vec <- as.vector(estimated_var)
@@ -22,9 +21,8 @@ small_sanity_check <- lapply(c(1:100), function(x) {
   true_var <- list_of_sim_data_for_comp[[x]] %>%
     lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
     broom::tidy() %>%
-    dplyr::filter(term == "V2") %>%
-    dplyr::mutate(variance = {std.error*{sample_size^{1/2}}}^2) %>%
-    dplyr::select(variance) %>%
+    dplyr::filter(term == "V1") %>%
+    dplyr::select(estimate) %>%
     unlist()
   
   temp_df <- data.frame("point_estimate" = var_point_estimate, 
