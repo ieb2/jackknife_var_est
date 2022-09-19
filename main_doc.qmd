@@ -8,22 +8,11 @@ editor: visual
 
 ```{r, message=FALSE}
 library(mice)
-library(MASS)h
+library(MASS)
 library(furrr)
 library(purrr)
 library(tidyverse)
 library(parallel)
-
-lm(outcome_variable ~ ., data = df_w_mis)
-  
-
-beta_1_function <- function(data, indices) {
-  d <- data[indices,] #allows boot to select sample
-  fit <- lm(outcome_variable ~ ., data = d) #fit regression model
-  return(summary(fit)$coefficients[2]) #return beta_1 of model
-}
-
-reps <- boot::boot(df_w_mis, statistic=beta_1_function, R=2000)
 ```
 
 # Data Simulation
@@ -63,10 +52,10 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ```{r, eval = FALSE}
 set.seed(971423)
-N = 10
-sample_size = 1000
+N = 100
+sample_size = 100
 seed = 1:N
-prop = 0.3
+prop = 0.8
 desired_data = "data_w_missing"
 
 # Create list of data frames with missing 
@@ -92,7 +81,7 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 5,method = "pmm", print=FALSE)
+    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 20,method = "pmm", print=FALSE, maxit = 20)
   } else{
     subsamples[[i]] <- subsamples[[i]]
   }
@@ -133,11 +122,14 @@ for(i in 1:length(subsamples)){
 }
 
 # Jackknife point estimate
-point_estimate_jackknife <- mean(analysis_vector)
+
+jittered_analysis_vector <- jitter(analysis_vector)
+
+point_estimate_jackknife <- mean(jittered_analysis_vector)
 
 # Quantile CI
-UB <- quantile(analysis_vector, 0.975)
-LB <- quantile(analysis_vector, 0.025)
+UB <- quantile(jittered_analysis_vector, 0.975)
+LB <- quantile(jittered_analysis_vector, 0.025)
 
 return(data.frame("point_estimate" = point_estimate_jackknife, 
                   "UB" = UB, 
@@ -149,6 +141,9 @@ return(data.frame("point_estimate" = point_estimate_jackknife,
 # Small Monte Carlo for Jackknife Estimator
 
 ```{r}
+# Singular test run 
+
+# Jackknife is stated to work better with small samples, maybe we should focus on that. 
 jackknife_estimator(df_w_mis)
 ```
 
@@ -171,7 +166,7 @@ jackknife_var_estimates <- do.call(rbind, jackknife_var_est) %>%
 library(future.apply)
 plan(multisession)
 
-jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estimator(x))
+jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estimator(x), future.seed=TRUE)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -183,7 +178,7 @@ cl <- makeCluster(detectCores())
 
 rubin_var_estimates <- mclapply(mc.cores = 1,list_of_sim_data,
                      function(x) 
-                       mice(x, seed = 123, print = FALSE, method = "pmm", m = 2) %>%
+                       mice(x, seed = 123, print = FALSE, method = "pmm", m = 20, maxit = 20) %>%
                        complete("all") %>%
                        map(lm, formula = outcome_variable ~.) %>%
                        pool() %>%
