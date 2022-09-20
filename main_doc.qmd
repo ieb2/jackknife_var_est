@@ -55,7 +55,7 @@ set.seed(971423)
 N = 10
 sample_size = 1000
 seed = 1:N
-prop = 0.8
+prop = 0.3
 desired_data = "data_w_missing"
 
 # Create list of data frames with missing 
@@ -69,7 +69,7 @@ stopCluster(cl)
 # Estimator Code
 
 ```{r}
-df_w_mis <- list_of_sim_data[[1]]
+df_w_mis <- list_of_sim_data[[10]]
 
 jackknife_estimator <- function(df_w_mis){
 # Creates n subsamples of n = n-1 
@@ -103,9 +103,9 @@ for(i in 1:length(subsamples)){
     analysis_vector[[i]] <- subsamples[[i]] %>%
       mice::complete("all") %>%
       map(lm, formula = outcome_variable ~ V1 + V2 + V3) %>%
-      map(., summary) %>%
-      lapply(., broom::tidy) %>%
-      do.call(rbind, .) %>%
+      pool() %>%
+      mice::tidy() %>%
+      as.data.frame() %>%
       dplyr::filter(term == "V1") %>%
       dplyr::select(estimate) %>%
       unlist() %>%
@@ -134,7 +134,6 @@ LB <- quantile(jittered_analysis_vector, 0.025)
 return(data.frame("point_estimate" = point_estimate_jackknife, 
                   "UB" = UB, 
                   "LB" = LB) %>% tibble::remove_rownames())
-
 }
 ```
 
