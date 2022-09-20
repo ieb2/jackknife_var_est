@@ -52,8 +52,8 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ```{r, eval = FALSE}
 set.seed(971423)
-N = 100
-sample_size = 100
+N = 10
+sample_size = 1000
 seed = 1:N
 prop = 0.8
 desired_data = "data_w_missing"
@@ -81,7 +81,7 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 20,method = "pmm", print=FALSE, maxit = 20)
+    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 5,method = "pmm", print=FALSE, maxit = 5)
   } else{
     subsamples[[i]] <- subsamples[[i]]
   }
@@ -178,7 +178,7 @@ cl <- makeCluster(detectCores())
 
 rubin_var_estimates <- mclapply(mc.cores = 1,list_of_sim_data,
                      function(x) 
-                       mice(x, seed = 123, print = FALSE, method = "pmm", m = 20, maxit = 20) %>%
+                       mice(x, seed = 123, print = FALSE, method = "pmm", m = 5, maxit = 5) %>%
                        complete("all") %>%
                        map(lm, formula = outcome_variable ~.) %>%
                        pool() %>%
