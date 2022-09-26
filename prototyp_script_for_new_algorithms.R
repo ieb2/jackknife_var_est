@@ -1,3 +1,6 @@
+# Try to come up with a way to justify the amount of noise added. 
+combn(analysis_vector, 2)
+
 df_w_mis <- list_of_sim_data[[10]]
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
@@ -59,6 +62,8 @@ for(i in 1:length(subsamples)){
 }
 
 # Jackknife point estimate
+
+
 
 jittered_analysis_vector <- jitter(analysis_vector, factor = 10000)
 point_estimate_jackknife <- mean(jittered_analysis_vector)
