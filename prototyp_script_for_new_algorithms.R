@@ -1,6 +1,3 @@
-# Try to come up with a way to justify the amount of noise added. 
-combn(analysis_vector, 2)
-
 df_w_mis <- list_of_sim_data[[10]]
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
@@ -38,22 +35,17 @@ for(i in 1:length(subsamples)){
   if(is_mice[[i]] == TRUE){
     analysis_vector[[i]] <- subsamples[[i]] %>%
       mice::complete("long") %>%
-      group_by(.imp) %>%
-      do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
-      as.list() %>%
-      .[[-1]] %>%
-      pool() %>%
+      lm(outcome_variable ~ V1 + V2 + V3, data = .) %>%
       summary() %>%
-      as.data.frame() %>%
+      broom::tidy() %>%
       dplyr::filter(term == "V1") %>%
       dplyr::select(estimate) %>%
-      unlist() %>%
-      mean()
+      unlist()
   } else{
     analysis_vector[[i]] <- subsamples[[i]] %>%
       lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
       summary() %>%
-      as.data.frame() %>%
+      broom::tidy() %>%
       dplyr::filter(term == "V1") %>%
       dplyr::select(estimate) %>%
       unlist()
@@ -62,9 +54,6 @@ for(i in 1:length(subsamples)){
 }
 
 # Jackknife point estimate
-
-
-
 jittered_analysis_vector <- jitter(analysis_vector, factor = 10000)
 point_estimate_jackknife <- mean(jittered_analysis_vector)
 
@@ -109,4 +98,5 @@ reg_res <- boot(data = df_w_mis, statistic = regfun, R=1e3)
 plot(reg_res)
 boot.ci(reg_res, type="bca")
 
-
+# Try to come up with a way to justify the amount of noise added. 
+combn(analysis_vector, 2)
