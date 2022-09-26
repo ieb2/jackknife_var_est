@@ -59,9 +59,9 @@ prop = 0.3
 desired_data = "data_w_missing"
 
 # Create list of data frames with missing 
-cl <- makeCluster(detectCores())
+cl <- makeCluster(3)
 
-list_of_sim_data <- mclapply(mc.cores = 1, seed, function(x) data_generator(sample_size, x, prop, desired_data))
+list_of_sim_data <- mclapply(mc.cores = 3, seed, function(x) data_generator(sample_size, x, prop, desired_data))
 
 stopCluster(cl)
 ```
@@ -70,6 +70,10 @@ stopCluster(cl)
 
 ```{r}
 df_w_mis <- list_of_sim_data[[10]]
+
+uncon_pred_mat <- make.predictorMatrix(df_w_mis)
+
+uncon_pred_mat[,4] <- 0
 
 jackknife_estimator <- function(df_w_mis){
 # Creates n subsamples of n = n-1 
@@ -81,7 +85,7 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 3, method = "pmm", print=FALSE, maxit = 50)
+    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 2, method = "pmm", print=FALSE, maxit = 10, predictorMatrix = uncon_pred_mat)
   } else{
     subsamples[[i]] <- subsamples[[i]]
   }
@@ -155,9 +159,9 @@ jackknife_estimator(df_w_mis)
 ## Unix
 
 ```{r}
-cl <- makeCluster(detectCores())
+cl <- makeCluster(3)
 
-jackknife_var_est <- mclapply(mc.cores = detectCores(), list_of_sim_data, function(x) jackknife_estimator(x))
+jackknife_var_est <- mclapply(mc.cores = 3, list_of_sim_data[1:10], function(x) jackknife_estimator(x))
 
 stopCluster(cl)
 
@@ -179,10 +183,10 @@ jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estim
 ```{r, eval = FALSE}
 # If using windows, modify using code above 
 
-cl <- makeCluster(detectCores())
+cl <- makeCluster(3)
 
-rubin_var_estimates <- mclapply(mc.cores = 1,list_of_sim_data, function(x) 
-  mice(x, seed = 123, print = FALSE, method = "pmm", m = 10, maxit = 10) %>%
+rubin_var_estimates <- mclapply(mc.cores = 3,list_of_sim_data[1:10], function(x) 
+  mice(x, seed = 123, print = FALSE, method = "", m = 2, maxit = 2,  predictorMatrix = uncon_pred_mat) %>%
     mice::complete("long") %>%
     group_by(.imp) %>%
     do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -201,8 +205,7 @@ stopCluster(cl)
 rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
   as.data.frame()
 
-round((sum(0.2 < rubin_var_estimates$UB & 0.2 > rubin_var_estimates$LB) / nrow(rubin_var_estimates))*100,2)
-
+round((sum(0.2 < rubin_var_estimates$UB_rub & 0.2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
 ```
 
 # Organizing Results
