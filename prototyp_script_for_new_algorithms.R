@@ -1,4 +1,4 @@
-df_w_mis <- list_of_sim_data[[2]]
+df_w_mis <- list_of_sim_data[[20]]
 
 lm(outcome_variable ~ ., data = df_w_mis)
 
@@ -80,7 +80,35 @@ print(data.frame("point_estimate" = point_estimate_jackknife,
 
 ################ Playing around with analysis vector ################ 
 
+library(posterior)
+
 library(boot)
+library(arm)
+sim_from_prior_analysis <- bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
+  sim(n.sims = 1e4) 
+
+prior_analysis_V1 <- coef(sim_from_prior_analysis) %>%
+  as.data.frame() %>%
+  select(V1) %>%
+  unlist() %>% 
+  as.vector()
+
+sim_from_prior_imp <- bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
+  sim(n.sims = 1e4) 
+
+prior_imp_V1 <- coef(sim_from_prior_imp) %>%
+  as.data.frame() %>%
+  select(V1) %>%
+  unlist() %>% 
+  as.vector()
+
+ks.test(x = analysis_vector, y = prior_analysis_V1)
+ks.test(x = analysis_vector, y = prior_imp_V1)
+
+plot(ecdf(analysis_vector), verticals=TRUE, do.points=FALSE, col="blue") 
+plot(ecdf(prior_analysis_V1), verticals=TRUE, do.points=FALSE, col="green", add=TRUE) 
+  
+View(sim_from_prior_analysis)
 
 mean.fun <- function(d, i) {
   m = mean(d[i])
