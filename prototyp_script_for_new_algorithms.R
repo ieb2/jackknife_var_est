@@ -1,4 +1,6 @@
-df_w_mis <- list_of_sim_data[[10]]
+df_w_mis <- list_of_sim_data[[2]]
+
+lm(outcome_variable ~ ., data = df_w_mis)
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
@@ -13,8 +15,8 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 10, method = "norm.boot", 
-                            print=FALSE, maxit = 10, predictorMatrix = uncon_pred_mat)
+    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 2, method = "norm.nob", 
+                            print=FALSE, maxit = 1, predictorMatrix = uncon_pred_mat)
   } else{
     subsamples[[i]] <- subsamples[[i]]
   }
@@ -57,6 +59,17 @@ for(i in 1:length(subsamples)){
 jittered_analysis_vector <- jitter(analysis_vector, factor = 10000)
 point_estimate_jackknife <- mean(jittered_analysis_vector)
 
+density(jittered_analysis_vector) %>%
+  plot()
+
+analysis_vector_split <- 
+  split(jittered_analysis_vector, 
+        cut(jittered_analysis_vector, 
+            quantile(jittered_analysis_vector, prob = c(0, 0.25, 0.50, 0.75, 1), names = FALSE), include = TRUE)) %>%
+  map(., ~mean(.x)) %>%
+  unlist() %>%
+  weighted.mean(., w=c(0.7, 0.1, 0.1, 0.1))
+
 # Quantile CI
 UB <- quantile(jittered_analysis_vector, 0.975)
 LB <- quantile(jittered_analysis_vector, 0.025)
@@ -69,24 +82,27 @@ print(data.frame("point_estimate" = point_estimate_jackknife,
 
 library(boot)
 
+mean.fun <- function(d, i) {
+  m = mean(d[i])
+  n = length(d)
+  v = (n-1)*var(d[i])/n^2
+  c(m, v) }
+
 meanfun <- function(data, i){
   d <- data[i]
   return(mean(d))   
 }
 
-results <- boot(data=jittered_analysis_vector, statistic = meanfun, R=1e4)
+results <- boot(data=jittered_analysis_vector, statistic = mean.fun, R=1e4)
 
 plot(results)
 
 # get 95% confidence interval
-boot.ci(results, type="bca")
-
-lmrob(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
-  tidy()
+boot.ci(results, type="stud")
 
 regfun <- function(data, i){
   d <- data[i, ]
-  mod <- lmrob(formula = outcome_variable ~ V1 + V2 + V3, data = d)
+  mod <- lm(formula = outcome_variable ~ V1 + V2 + V3, data = d)
     broom::tidy(mod) %>%
     as.data.frame() %>%
     dplyr::filter(term == "V1") %>%
