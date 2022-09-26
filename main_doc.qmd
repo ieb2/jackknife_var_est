@@ -3,6 +3,17 @@ title: "main_doc"
 format: html
 editor: visual
 ---
+# Updates 
+
+  * Textbook with leftover money. 
+  * Good time for me to drop off your book? 
+  * Made discussed changes, but: 
+    * Either point estimator is good (Trivial bias)
+    * Or coverage is OK (~70%) -> Still lower than we would like. 
+  * Should we submit estimator V1.0 as thesis project?
+    * Essentially, jackknifing Rubin's estimator to reduce bias.  
+  * Thesis deadline is November 4 
+  * Application deadlines are around end of November to December 1. 
 
 # Dependencies
 
