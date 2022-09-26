@@ -31,10 +31,10 @@ data_generator <- function(sample_size, seed, prop, desired_data){
   covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
   covariates$V3 <- ifelse(covariates$V3 > 0, 1, 0)
   
-  outcome_variable <- 0 + 
-    0.2*covariates$V1 + 
-    0.5*covariates$V2 +  
-    0.8*covariates$V3 +
+  outcome_variable <- 4 + 
+    2*covariates$V1 + 
+    5*covariates$V2 +  
+    8*covariates$V3 +
     rnorm(sample_size, 0, 1)
   
   data_complete <- cbind(outcome_variable, covariates)
@@ -181,7 +181,7 @@ jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estim
 cl <- makeCluster(3)
 
 rubin_var_estimates <- mclapply(mc.cores = 3,list_of_sim_data[1:10], function(x) 
-  mice(x, seed = 123, print = FALSE, method = "", m = 2, maxit = 2,  predictorMatrix = uncon_pred_mat) %>%
+  mice(x, seed = 123, print = FALSE, method = "pmm", m = 2, maxit = 5,  predictorMatrix = uncon_pred_mat) %>%
     mice::complete("long") %>%
     group_by(.imp) %>%
     do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -200,7 +200,7 @@ stopCluster(cl)
 rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
   as.data.frame()
 
-round((sum(0.2 < rubin_var_estimates$UB_rub & 0.2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
+round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
 ```
 
 # Organizing Results
@@ -208,7 +208,7 @@ round((sum(0.2 < rubin_var_estimates$UB_rub & 0.2 > rubin_var_estimates$LB_rub) 
 ```{r}
 jackknife_estimate <- do.call(rbind,jackknife_var_est)
 
-combined_results <- cbind(true_var = 0.2, rubin_var_estimates, jackknife_estimate)
+combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_estimate)
 ```
 
 # Analysis of Results
