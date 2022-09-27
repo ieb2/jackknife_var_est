@@ -1,13 +1,13 @@
 df_w_mis <- list_of_sim_data[[54]]
 
-lapply(list_of_sim_data, function(x) lm(outcome_variable ~ ., data = x)) %>%
+lapply(list_of_sim_data, function(x) lm(outcome_variable ~ V1 + V2, data = x)) %>%
   map(., tidy) %>%
   do.call(rbind, .) %>%
   dplyr::filter(term == "V1") %>%
   dplyr::select(estimate) %>%
   unlist() %>%
   as.vector() %>%
-  sd()
+  mean()
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
@@ -80,39 +80,70 @@ print(data.frame("point_estimate" = point_estimate_jackknife,
 ################ Playing around with analysis vector ################ 
 
 library(posterior)
-
 library(boot)
 library(arm)
-sim_from_prior_analysis <- bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
-  sim(n.sims = 1e4) 
 
-prior_analysis_V1 <- coef(sim_from_prior_analysis) %>%
+sim_from_prior_analysis <- 
+  bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
+  sim(n.sims = length(analysis_vector)) %>%
+  coef() %>%
   as.data.frame() %>%
   select(V1) %>%
   unlist() %>% 
   as.vector()
 
-sim_from_prior_imp <- bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
-  sim(n.sims = 1e4) 
-
-prior_imp_V1 <- coef(sim_from_prior_imp) %>%
+sim_from_prior_imp <- 
+  bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
+  sim(n.sims = length(analysis_vector)) %>%
+  coef() %>%
   as.data.frame() %>%
   select(V1) %>%
   unlist() %>% 
   as.vector()
 
-mean_dist <- c(prior_imp_V1 , prior_analysis_V1, analysis_vector)
-as.data.frame(mean_dist) -> q
-
-data.frame(prior_imp_V1, prior_analysis_V1, analysis_vector) %>%
+data.frame(sim_from_prior_imp , sim_from_prior_analysis, analysis_vector) %>%
   reshape2::melt() %>%
   ggplot(., aes(x = value, fill = variable)) + 
   geom_density() + 
-  geom_density(aes(mean_dist, fill = "mean_dist"), data = q) +
+  #geom_density(aes(mean_dist, fill = "mean_dist"), data = q) +
   theme_classic() + 
   expand_limits(y=c(0, 1))
 
-View(sim_from_prior_analysis)
+dens_prior_analysis <- density(sim_from_prior_analysis)
+dens_prior_imputation <- density(sim_from_prior_imp)
+dens_analysis_vector <- density(analysis_vector)
+
+
+lik <- dens_analysis_vector$y
+ 
+prior <- dens_prior_analysis$y
+
+raw_posterior <- lik * prior 
+
+standardized_posterior <- raw_posterior/sum(raw_posterior)
+
+rangeP <- seq(0, 1, length.out = length(lik))
+
+plot(rangeP, lik,
+     type = "l", xlab = "P(Black)", ylab = "Density", ylim = c(0,30))
+lines(rangeP, prior,
+      col = "red")
+lines(rangeP, raw_posterior, col = "green")
+lines(rangeP, standardized_posterior, col = "blue")
+legend("topleft", legend = c("Lik", "Prior", "Unstd Post", "Post"),
+       text.col = 1:4, bty = "n") 
+
+
+
+pp <- data.frame(density(sim_from_prior_imp)$y, density(sim_from_prior_analysis)$y,
+                 density(analysis_vector)$y) %>%
+  reshape2::melt() %>%
+  ggplot(., aes(x = value, fill = variable)) + 
+  geom_density() + 
+  geom_density(aes(x = values, fill = "standardized_posterior"),
+               data.frame(values = standardized_posterior)) 
+
+  plotly::ggplotly(pp)
 
 mean.fun <- function(d, i) {
   m = mean(d[i])
