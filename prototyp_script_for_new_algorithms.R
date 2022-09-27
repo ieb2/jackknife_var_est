@@ -113,10 +113,12 @@ dens_prior_analysis <- density(sim_from_prior_analysis)
 dens_prior_imputation <- density(sim_from_prior_imp)
 dens_analysis_vector <- density(analysis_vector)
 
+res <- 1 / length(analysis_vector) 
+beta.h <- seq(-3, 3, res)
+density <- dens_prior_analysis$y # Get the density for each value in mu.h
+prior <- density * res      # Multiply with resolution to get probability per interval
 
-lik <- dens_analysis_vector$y
- 
-prior <- dens_prior_analysis$y
+likelihood <- prior * analysis_vector
 
 raw_posterior <- lik * prior 
 
