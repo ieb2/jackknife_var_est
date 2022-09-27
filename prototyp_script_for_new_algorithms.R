@@ -1,6 +1,13 @@
-df_w_mis <- list_of_sim_data[[20]]
+df_w_mis <- list_of_sim_data[[54]]
 
-lm(outcome_variable ~ ., data = df_w_mis)
+lapply(list_of_sim_data, function(x) lm(outcome_variable ~ ., data = x)) %>%
+  map(., tidy) %>%
+  do.call(rbind, .) %>%
+  dplyr::filter(term == "V1") %>%
+  dplyr::select(estimate) %>%
+  unlist() %>%
+  as.vector() %>%
+  sd()
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
