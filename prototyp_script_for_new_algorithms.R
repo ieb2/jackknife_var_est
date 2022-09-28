@@ -18,6 +18,8 @@ sample <- sapply(sample.int(choose(n, k), 1000)-1, choose.int, n=n, k=k)
 drop_d_subsamples <- map(1:ncol(sample),
                          ~df_w_mis[sample[,.x],])
 
+drop_d_subsamples <- map(drop_d_subsamples, ~as_tibble(.x))
+
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
 uncon_pred_mat[,4] <- 0
