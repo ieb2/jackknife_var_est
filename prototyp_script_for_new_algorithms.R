@@ -22,7 +22,7 @@ contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
 
 for(i in 1:length(subsamples)){
   if(contains_na[[i]] == TRUE){
-    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 1, method = "pmm", 
+    subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 2, method = "pmm", 
                             print=FALSE, maxit = 1, predictorMatrix = uncon_pred_mat)
   } else{
     subsamples[[i]] <- subsamples[[i]]
@@ -83,6 +83,7 @@ library(posterior)
 library(boot)
 library(arm)
 
+# Random sample from posterior dist of analysis model. 
 sim_from_prior_analysis <- 
   bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
   sim(n.sims = length(analysis_vector)) %>%
@@ -92,6 +93,7 @@ sim_from_prior_analysis <-
   unlist() %>% 
   as.vector()
 
+# Random sample from posterior dist of imp model. 
 sim_from_prior_imp <- 
   bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
   sim(n.sims = length(analysis_vector)) %>%
@@ -101,7 +103,19 @@ sim_from_prior_imp <-
   unlist() %>% 
   as.vector()
 
+# Trying to make sense of Bayesian analysis in this context. 
+# In our case, the person doing the analysis either has access to 
+# the imputation or analysis model, as well as the jackknife estimates. 
+
+data.frame(sim_from_prior_imp , sim_from_prior_analysis, analysis_vector) %>%
+  reshape2::melt() %>%
+  ggplot(., aes(x = value, fill = variable)) + 
+  geom_density() + 
+  #geom_density(aes(mean_dist, fill = "mean_dist"), data = q) +
+  theme_classic() 
+
 sample_betas <- sim_from_prior_imp
+
 # Assuming betas come from normal dist with following parameters. 
 rnorm(n = length(sample_betas), mean =  mean(sample_betas), sd = sd(sample_betas))
 like <- dnorm(x = analysis_vector, mean = mean(sample_betas), sd = sd(sample_betas)) 

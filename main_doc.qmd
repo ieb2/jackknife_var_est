@@ -3,6 +3,12 @@ title: "main_doc"
 format: html
 editor: visual
 ---
+# Updates 
+  * Jackknife likely struggling since statistic is non-smooth. 
+    * Two options: 
+      * Drop-d jackknife -> Extremely computationally expensive
+      * Work with the resulting distributions for better estimates. 
+      
 
 # Dependencies
 
@@ -61,7 +67,7 @@ desired_data = "data_w_missing"
 # Create list of data frames with missing 
 cl <- makeCluster(3)
 
-list_of_sim_data <- mclapply(mc.cores = 1, seed, function(x) data_generator(sample_size, x, prop, desired_data))
+list_of_sim_data <- mclapply(mc.cores = 3, seed, function(x) data_generator(sample_size, x, prop, desired_data))
 
 stopCluster(cl)
 ```
