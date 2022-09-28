@@ -133,3 +133,59 @@ analysis_vector_split <-
   map(., ~mean(.x)) %>%
   unlist() %>%
   weighted.mean(., w=c(0.7, 0.1, 0.1, 0.1))
+
+################ Playing around with analysis vector ################ 
+
+library(posterior)
+library(boot)
+library(arm)
+
+# Random sample from posterior dist of analysis model. 
+sim_from_prior_analysis <- 
+  bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
+  sim(n.sims = length(analysis_vector)) %>%
+  coef() %>%
+  as.data.frame() %>%
+  select(V1) %>%
+  unlist() %>% 
+  as.vector()
+
+# Random sample from posterior dist of imp model. 
+sim_from_prior_imp <- 
+  bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
+  sim(n.sims = length(analysis_vector)) %>%
+  coef() %>%
+  as.data.frame() %>%
+  select(V1) %>%
+  unlist() %>% 
+  as.vector()
+
+# Trying to make sense of Bayesian analysis in this context. 
+# In our case, the person doing the analysis either has access to 
+# the imputation or analysis model, as well as the jackknife estimates. 
+
+data.frame(sim_from_prior_imp , sim_from_prior_analysis, analysis_vector) %>%
+  reshape2::melt() %>%
+  ggplot(., aes(x = value, fill = variable)) + 
+  geom_density() + 
+  #geom_density(aes(mean_dist, fill = "mean_dist"), data = q) +
+  theme_classic() 
+
+sample_betas <- sim_from_prior_imp
+
+# Assuming betas come from normal dist with following parameters. 
+rnorm(n = length(sample_betas), mean =  mean(sample_betas), sd = sd(sample_betas))
+like <- dnorm(x = analysis_vector, mean = mean(sample_betas), sd = sd(sample_betas)) 
+
+par(mfrow = c( 1,2 ) ) 
+beta_distr <- analysis_vector
+p1 <- hist(beta_distr, 60, col = "lightgreen")
+
+possible_betas <- c(sim_from_prior_imp, analysis_vector)
+
+likelihood <- dnorm(possible_betas, mean(analysis_vector), sd = sd(analysis_vector))
+
+p2 <- plot( x = possible_betas,
+            y = likelihood,
+            type = 'h', 
+            xlim=c(1,3))
