@@ -6,10 +6,13 @@ editor: visual
 # Updates 
   * Jackknife likely struggling since statistic is non-smooth. 
     * Two options: 
-      * Drop-d jackknife -> Extremely computationally expensive
+      * Drop-d jackknife
+        * Extremely computationally expensive
+          * Subsampling + drop-d jackknife? 
       * Work with the resulting distributions for better estimates. 
+        * Will likely have to go Bayesian, issue for rest of study? 
+        * What do you think of confidence distributions? 
       
-
 # Dependencies
 
 ```{r, message=FALSE}
