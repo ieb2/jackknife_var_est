@@ -9,6 +9,7 @@ editor: visual
       * Drop-d jackknife
         * Extremely computationally expensive
           * Subsampling + drop-d jackknife? 
+            * Set an upper limit on the drop-d -> 
       * Work with the resulting distributions for better estimates. 
         * Will likely have to go Bayesian, issue for rest of study? 
         * What do you think of confidence distributions? 

@@ -1,13 +1,22 @@
 df_w_mis <- list_of_sim_data[[54]]
 
-lapply(list_of_sim_data, function(x) lm(outcome_variable ~ V1 + V2, data = x)) %>%
-  map(., tidy) %>%
-  do.call(rbind, .) %>%
-  dplyr::filter(term == "V1") %>%
-  dplyr::select(estimate) %>%
-  unlist() %>%
-  as.vector() %>%
-  mean()
+choose.int <- function(x, n, k) {
+  if(n <= k) return(rep(TRUE, k))
+  u <- choose(n-1, k-1)
+  pick <- x < u
+  if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
+  return(c(pick, y))
+}
+# n is the sample size of the subsamples 
+# k s the number of subsamples desired 
+n <- 100; k <- 10
+
+# This code selects 1000 disjoint k subsets of size n from the dataframe 
+# Column is index for what to include/exclude 
+sample <- sapply(sample.int(choose(n, k), 1000)-1, choose.int, n=n, k=k)
+
+drop_d_subsamples <- map(1:ncol(sample),
+                         ~df_w_mis[sample[,.x],])
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
@@ -77,58 +86,3 @@ print(data.frame("point_estimate" = point_estimate_jackknife,
                  "UB" = UB, 
                  "LB" = LB) %>% tibble::remove_rownames())
 
-################ Playing around with analysis vector ################ 
-
-library(posterior)
-library(boot)
-library(arm)
-
-# Random sample from posterior dist of analysis model. 
-sim_from_prior_analysis <- 
-  bayesglm(formula = outcome_variable ~ V1 + V2 + V3, data = df_w_mis) %>%
-  sim(n.sims = length(analysis_vector)) %>%
-  coef() %>%
-  as.data.frame() %>%
-  select(V1) %>%
-  unlist() %>% 
-  as.vector()
-
-# Random sample from posterior dist of imp model. 
-sim_from_prior_imp <- 
-  bayesglm(formula = outcome_variable ~ V1 + V2, data = df_w_mis) %>%
-  sim(n.sims = length(analysis_vector)) %>%
-  coef() %>%
-  as.data.frame() %>%
-  select(V1) %>%
-  unlist() %>% 
-  as.vector()
-
-# Trying to make sense of Bayesian analysis in this context. 
-# In our case, the person doing the analysis either has access to 
-# the imputation or analysis model, as well as the jackknife estimates. 
-
-data.frame(sim_from_prior_imp , sim_from_prior_analysis, analysis_vector) %>%
-  reshape2::melt() %>%
-  ggplot(., aes(x = value, fill = variable)) + 
-  geom_density() + 
-  #geom_density(aes(mean_dist, fill = "mean_dist"), data = q) +
-  theme_classic() 
-
-sample_betas <- sim_from_prior_imp
-
-# Assuming betas come from normal dist with following parameters. 
-rnorm(n = length(sample_betas), mean =  mean(sample_betas), sd = sd(sample_betas))
-like <- dnorm(x = analysis_vector, mean = mean(sample_betas), sd = sd(sample_betas)) 
-
-par(mfrow = c( 1,2 ) ) 
-beta_distr <- rnorm(n = 100000, mean(sample_betas), sd = sd(sample_betas))
-p1 <- hist(beta_distr, 60, col = "lightgreen")
-
-possible_betas <- seq(-3, 3, by = 0.01)
-
-likelihood <- dnorm(possible_betas, mean(sample_betas), sd = sd(sample_betas))
-
-p2 <- plot( x = possible_betas,
-            y = likelihood,
-            type = 'h', 
-            xlim=c(1,3))
