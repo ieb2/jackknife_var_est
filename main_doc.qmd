@@ -65,7 +65,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ```{r, eval = TRUE}
 set.seed(971423)
-N = 10
+N = 100
 sample_size = 100
 seed = 1:N
 prop = 0.3
@@ -104,7 +104,7 @@ n <- 100; k <- 90
 # Column is index for what to include/exclude 
 
 # If choose(n,k) is a big number (~1e9), code fails. 
-sample <- sapply(sample.int(choose(n, k), 1e3, replace = FALSE)-1, choose.int, n=n, k=k)
+sample <- sapply(sample.int(choose(n, k), 200, replace = FALSE)-1, choose.int, n=n, k=k)
 
 jackknife_estimator <- function(df_w_mis){
   drop_d_subsamples <- map(1:ncol(sample),
@@ -161,12 +161,12 @@ jackknife_estimator <- function(df_w_mis){
   }
   
   # Jackknife point estimate
-  # jittered_analysis_vector <- jitter(analysis_vector)
-  point_estimate_jackknife <- mean(analysis_vector)
+  jittered_analysis_vector <- jitter(analysis_vector, factor = 1000)
+  point_estimate_jackknife <- mean(jittered_analysis_vector)
   
   # Quantile CI
-  UB <- quantile(analysis_vector, 0.975)
-  LB <- quantile(analysis_vector, 0.025)
+  UB <- quantile(jittered_analysis_vector, 0.975)
+  LB <- quantile(jittered_analysis_vector, 0.025)
   
   return(data.frame("point_estimate" = point_estimate_jackknife, 
                    "UB" = UB, 
@@ -215,7 +215,7 @@ jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estim
 cl <- makeCluster(num_cores)
 
 rubin_var_estimates <- mclapply(mc.cores = num_cores,list_of_sim_data, function(x) 
-  mice(x, seed = 123, print = FALSE, method = "pmm", m = 2, maxit = 1,  predictorMatrix = uncon_pred_mat) %>%
+  mice(x, seed = 123, print = FALSE, method = "pmm", m = 2, maxit = 5,  predictorMatrix = uncon_pred_mat) %>%
     mice::complete("long") %>%
     group_by(.imp) %>%
     do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -242,7 +242,14 @@ round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nr
 ```{r}
 jackknife_estimate <- do.call(rbind,jackknife_var_est)
 
-combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_estimate)
+combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_estimate) 
+
+rubin_width <- combined_results$UB_rub - combined_results$LB_rub
+jackknife_width <- combined_results$UB - combined_results$LB
+
+combined_results <- cbind(combined_results, rubin_width, jackknife_width)
+
+sum(combined_results$rubin_width > combined_results$jackknife_width) / N * 100
 ```
 
 # Analysis of Results
