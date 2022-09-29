@@ -7,9 +7,9 @@ choose.int <- function(x, n, k) {
   if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
   return(c(pick, y))
 }
-# n is the sample size of the subsamples 
-# k s the number of subsamples desired 
-n <- 100; k <- 10
+# n is the sample size of the full datasets (n = 1000 for us)
+# k is the # of observations we would like to remove from n = 1000 
+n <- 40; k <- 10
 
 # This code selects 1000 disjoint k subsets of size n from the dataframe 
 # Column is index for what to include/exclude 
