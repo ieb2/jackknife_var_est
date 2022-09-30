@@ -3,16 +3,6 @@ title: "main_doc"
 format: html
 editor: visual
 ---
-# Updates 
-  * Jackknife likely struggling since statistic is non-smooth. 
-    * Two options: 
-      * Drop-d jackknife
-        * Extremely computationally expensive
-          * Subsampling + drop-d jackknife? 
-            * Set an upper limit on the drop-d -> 
-      * Work with the resulting distributions for better estimates. 
-        * Will likely have to go Bayesian, issue for rest of study? 
-        * What do you think of confidence distributions? 
       
 # Dependencies
 
@@ -25,6 +15,10 @@ library(tidyverse)
 library(parallel)
 
 num_cores <- parallel::detectCores() - 1
+
+number_of_imps <- 2
+
+number_of_its <- 1
 ```
 
 # Data Simulation
@@ -41,20 +35,19 @@ data_generator <- function(sample_size, seed, prop, desired_data){
   mean_vec <- c(1, 1, 1)
   
   covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
-  covariates$V3 <- ifelse(covariates$V3 > 0, 1, 0)
   
   outcome_variable <- 4 + 
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rnorm(sample_size, 0, 1)
+    rnorm(sample_size, 0, 5)
   
   data_complete <- cbind(outcome_variable, covariates)
-  data_complete$V3 <- as.factor(data_complete$V3)
   
-  data_w_missing <- suppressWarnings(ampute(data_complete, prop = prop, mech = "MAR", patterns = c(0, 1, 1, 1))$amp)
-  
-  data_w_missing$V3 <- as.factor(ifelse(data_w_missing$V3 == 1, 0, 1))
+  data_w_missing <- 
+    suppressWarnings(
+      ampute(data_complete, prop = prop, mech = "MAR", patterns = c(0, 1, 1, 1))$amp
+    )
   
   return(get(desired_data))
 }
@@ -66,7 +59,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 ```{r, eval = TRUE}
 set.seed(971423)
 N = 100
-sample_size = 100
+sample_size = 1000
 seed = 1:N
 prop = 0.3
 desired_data = "data_w_missing"
@@ -78,7 +71,7 @@ list_of_sim_data <- mclapply(mc.cores = num_cores, seed, function(x) data_genera
 
 stopCluster(cl)
 
-df_w_mis <- list_of_sim_data[[1]]
+df_w_mis <- list_of_sim_data[[10]]
 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
 
@@ -95,18 +88,28 @@ choose.int <- function(x, n, k) {
   if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
   return(c(pick, y))
 }
-
 # n is the sample size of the full datasets (n = 1000 for us)
 # k is the # of observations we would like to keep from n = 1000 
 # The value inside sapply is the # of subsamples we would like. 
-n <- 100; k <- 90
+n <- 1000; k <- 100
+
+length_sample_vec <- choose(n, k)
+
+if (choose(n, k) > 1e15) {
+  length_sample_vec = 1e15
+} else
+{
+  length_sample_vec = choose(n, k)
+}
 
 # Column is index for what to include/exclude 
 
-# If choose(n,k) is a big number (~1e9), code fails. 
-sample <- sapply(sample.int(choose(n, k), 200, replace = FALSE)-1, choose.int, n=n, k=k)
+# If choose(n,k) is a big number (~1e15), code fails. 
+sample <- sapply(sample.int(length_sample_vec, 500, replace = FALSE, )-1,
+                 choose.int, n=n, k=k)
 
 jackknife_estimator <- function(df_w_mis){
+  
   drop_d_subsamples <- map(1:ncol(sample),
                            ~df_w_mis[sample[,.x],])
   
@@ -118,10 +121,18 @@ jackknife_estimator <- function(df_w_mis){
   
   contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
   
-  for(i in 1:length(drop_d_subsamples)){
-    if(contains_na[[i]] == TRUE){
-      drop_d_subsamples[[i]] <- mice(drop_d_subsamples[[i]], seed = 123, m = 2, method = "pmm", 
-                                     print=FALSE, maxit = 5, predictorMatrix = uncon_pred_mat)
+  for (i in 1:length(drop_d_subsamples)) {
+    if (contains_na[[i]] == TRUE) {
+      drop_d_subsamples[[i]] <-
+        mice(
+          drop_d_subsamples[[i]],
+          seed = 123,
+          m = number_of_imps,
+          method = "pmm",
+          print = FALSE,
+          maxit = number_of_its,
+          predictorMatrix = uncon_pred_mat
+        )
     } else{
       drop_d_subsamples[[i]] <- drop_d_subsamples[[i]]
     }
@@ -138,7 +149,7 @@ jackknife_estimator <- function(df_w_mis){
   analysis_vector <- vector("numeric", length = length(drop_d_subsamples))
   
   for(i in 1:length(drop_d_subsamples)){
-    sample_size <- nrow(complete(drop_d_subsamples[[i]],1))
+    sample_size <- 1000
     if(is_mice[[i]] == TRUE){
       analysis_vector[[i]] <- drop_d_subsamples[[i]] %>%
         mice::complete("long") %>%
@@ -161,12 +172,12 @@ jackknife_estimator <- function(df_w_mis){
   }
   
   # Jackknife point estimate
-  jittered_analysis_vector <- jitter(analysis_vector, factor = 1000)
-  point_estimate_jackknife <- mean(jittered_analysis_vector)
+  # jittered_analysis_vector <- jitter(analysis_vector)
+  point_estimate_jackknife <- mean(analysis_vector)
   
   # Quantile CI
-  UB <- quantile(jittered_analysis_vector, 0.975)
-  LB <- quantile(jittered_analysis_vector, 0.025)
+  UB <- quantile(analysis_vector, 0.975)
+  LB <- quantile(analysis_vector, 0.025)
   
   return(data.frame("point_estimate" = point_estimate_jackknife, 
                    "UB" = UB, 
@@ -179,10 +190,104 @@ jackknife_estimator <- function(df_w_mis){
 ```{r, eval = FALSE}
 # Singular test run 
 
-# Jackknife is stated to work better with small samples, maybe we should focus on that. 
-
-# I think jackknife is struggling because the test statistic is non-smooth (values vary widely between any given two jackknife subsamples, we could look into drop-d-jackknife, but the number of combinations would be too high (n choose k) Look into other methods)
 jackknife_estimator(df_w_mis)
+
+# Small sim to see effect of k 
+
+possible_ks <- seq.int(100, 200, 1)
+
+k_test_fun <- function(poss_k){
+  n <- 1000; k <- poss_k
+  
+  length_sample_vec <- choose(n, k)
+  
+  if (choose(n, k) > 1e15) {
+    length_sample_vec = 1e15
+  } else
+  {
+    length_sample_vec = choose(n, k)
+  }
+  
+  sample <- sapply(sample.int(length_sample_vec, 500, replace = FALSE, )-1,
+                   choose.int, n=n, k=k)
+  
+  
+  drop_d_subsamples <- map(1:ncol(sample),
+                           ~df_w_mis[sample[,.x],])
+  
+  # Creates n subsamples of n = n-1 
+  
+  contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
+  for (i in 1:length(drop_d_subsamples)) {
+    if (contains_na[[i]] == TRUE) {
+      drop_d_subsamples[[i]] <-
+        mice(
+          drop_d_subsamples[[i]],
+          seed = 123,
+          m = number_of_imps,
+          method = "pmm",
+          print = FALSE,
+          maxit = number_of_its,
+          predictorMatrix = uncon_pred_mat
+        )
+    } else{
+      drop_d_subsamples[[i]] <- drop_d_subsamples[[i]]
+    }
+  }
+  
+  # Logical test to determine presence of MICE objects 
+  is_mice <- vector("logical", length = length(drop_d_subsamples))
+  
+  for(i in 1:length(drop_d_subsamples)){
+    is_mice[[i]] <- ifelse(class(drop_d_subsamples[[i]]) == "mids", TRUE, FALSE)
+  }
+  
+  # Applies appt analysis depending on type 
+  analysis_vector <- vector("numeric", length = length(drop_d_subsamples))
+  
+  for(i in 1:length(drop_d_subsamples)){
+    if(is_mice[[i]] == TRUE){
+      analysis_vector[[i]] <- drop_d_subsamples[[i]] %>%
+        mice::complete("long") %>%
+        lm(outcome_variable ~ V1 + V2 + V3, data = .) %>%
+        summary() %>%
+        broom::tidy() %>%
+        dplyr::filter(term == "V1") %>%
+        dplyr::select(estimate) %>%
+        unlist()
+    } else{
+      analysis_vector[[i]] <- drop_d_subsamples[[i]] %>%
+        lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
+        summary() %>%
+        broom::tidy() %>%
+        dplyr::filter(term == "V1") %>%
+        dplyr::select(estimate) %>%
+        unlist()
+    }
+    
+  }
+  
+  # Jackknife point estimate
+  # jittered_analysis_vector <- jitter(analysis_vector)
+  point_estimate_jackknife <- mean(analysis_vector)
+  
+  # Quantile CI
+  UB <- quantile(analysis_vector, 0.975)
+  LB <- quantile(analysis_vector, 0.025)
+  
+  return(data.frame("point_estimate" = point_estimate_jackknife, 
+                    "UB" = UB, 
+                    "LB" = LB) %>% tibble::remove_rownames())
+}
+
+cl <- makeCluster(num_cores)
+
+k_res <- mclapply(mc.cores = num_cores, possible_ks, k_test_fun)
+
+stopCluster(cl)
+
+k_res_df <- do.call(rbind, k_res) %>%
+  as.data.frame()
 ```
 
 ## Unix
@@ -215,7 +320,7 @@ jackknife_var_est <- future_lapply(list_of_sim_data, function(x) jackknife_estim
 cl <- makeCluster(num_cores)
 
 rubin_var_estimates <- mclapply(mc.cores = num_cores,list_of_sim_data, function(x) 
-  mice(x, seed = 123, print = FALSE, method = "pmm", m = 2, maxit = 5,  predictorMatrix = uncon_pred_mat) %>%
+  mice(x, seed = 123, print = FALSE, method = "pmm", m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
     mice::complete("long") %>%
     group_by(.imp) %>%
     do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -234,6 +339,7 @@ stopCluster(cl)
 rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
   as.data.frame()
 
+# Rubin's coverage
 round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
 ```
 
@@ -249,12 +355,14 @@ jackknife_width <- combined_results$UB - combined_results$LB
 
 combined_results <- cbind(combined_results, rubin_width, jackknife_width)
 
+# % of samples for which the rubin CI is wider than the jackknife one. 
 sum(combined_results$rubin_width > combined_results$jackknife_width) / N * 100
 ```
 
 # Analysis of Results
 
 ```{r}
+# Jackknife coverage probability
 round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
 
 reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%

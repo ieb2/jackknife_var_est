@@ -5,18 +5,28 @@ choose.int <- function(x, n, k) {
   if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
   return(c(pick, y))
 }
-
 # n is the sample size of the full datasets (n = 1000 for us)
 # k is the # of observations we would like to keep from n = 1000 
 # The value inside sapply is the # of subsamples we would like. 
-n <- 100; k <- 90
+n <- 1000; k <- poss_k
+
+length_sample_vec <- choose(n, k)
+
+if (choose(n, k) > 1e15) {
+  length_sample_vec = 1e15
+} else
+{
+  length_sample_vec = choose(n, k)
+}
 
 # Column is index for what to include/exclude 
 
-# If choose(n,k) is a big number (~1e9), code fails. 
-sample <- sapply(sample.int(choose(n, k), 1e3, replace = FALSE)-1, choose.int, n=n, k=k)
+# If choose(n,k) is a big number (~1e15), code fails. 
+sample <- sapply(sample.int(length_sample_vec, 500, replace = FALSE, )-1,
+                 choose.int, n=n, k=k)
 
-jackknife_estimator <- {
+jackknife_estimator <- function(df_w_mis){
+  
   drop_d_subsamples <- map(1:ncol(sample),
                            ~df_w_mis[sample[,.x],])
   
@@ -28,10 +38,18 @@ jackknife_estimator <- {
   
   contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
   
-  for(i in 1:length(drop_d_subsamples)){
-    if(contains_na[[i]] == TRUE){
-      drop_d_subsamples[[i]] <- mice(drop_d_subsamples[[i]], seed = 123, m = 2, method = "pmm", 
-                                     print=FALSE, maxit = 5, predictorMatrix = uncon_pred_mat)
+  for (i in 1:length(drop_d_subsamples)) {
+    if (contains_na[[i]] == TRUE) {
+      drop_d_subsamples[[i]] <-
+        mice(
+          drop_d_subsamples[[i]],
+          seed = 123,
+          m = number_of_imps,
+          method = "pmm",
+          print = FALSE,
+          maxit = number_of_its,
+          predictorMatrix = uncon_pred_mat
+        )
     } else{
       drop_d_subsamples[[i]] <- drop_d_subsamples[[i]]
     }
@@ -48,7 +66,7 @@ jackknife_estimator <- {
   analysis_vector <- vector("numeric", length = length(drop_d_subsamples))
   
   for(i in 1:length(drop_d_subsamples)){
-    sample_size <- nrow(complete(drop_d_subsamples[[i]],1))
+    sample_size <- 1000
     if(is_mice[[i]] == TRUE){
       analysis_vector[[i]] <- drop_d_subsamples[[i]] %>%
         mice::complete("long") %>%
@@ -79,6 +97,6 @@ jackknife_estimator <- {
   LB <- quantile(analysis_vector, 0.025)
   
   return(data.frame("point_estimate" = point_estimate_jackknife, 
-                   "UB" = UB, 
-                   "LB" = LB) %>% tibble::remove_rownames())
+                    "UB" = UB, 
+                    "LB" = LB) %>% tibble::remove_rownames())
 }
