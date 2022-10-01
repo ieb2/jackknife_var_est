@@ -1,117 +1,288 @@
-small_sanity_check <- lapply(c(1:100), function(x) {
-  df <- list_of_sim_data[[x]]
+---
+  title: "main_doc"
+format: html
+editor: visual
+---
   
-  imps <- bootImpute::bootMice(df, nBoot = 300, nImp = 5, nCores = 6, seed = 123, print = FALSE)
+  # Dependencies
   
-  estimated_var <- sapply(imps, function(x)
-    lm(formula = outcome_variable ~ V1 + V2 + V3, data = x) %>%
-      broom::tidy() %>%
-      dplyr::filter(term == "V1") %>%
-      dplyr::select(estimate) %>%
-      unlist()
-  )
-  estimated_var_vec <- as.vector(estimated_var)
+  ```{r, message=FALSE}
+library(mice)
+library(MASS)
+library(furrr)
+library(purrr)
+library(tidyverse)
+library(parallel)
+
+number_of_imps <- 2
+
+number_of_its <- 1
+
+options(future.rng.onMisuse = 'ignore')
+```
+
+# Data Simulation
+
+## Defining data simulation function
+
+```{r}
+data_generator <- function(sample_size, seed, prop, desired_data){
+  set.seed(seed)
+  cor_mat <- matrix(c(1, 0.5, 0.5, 
+                      0.5, 1, 0.5, 
+                      0.5, 0.5, 1), nrow = 3, ncol = 3)
   
-  var_point_estimate <- mean(estimated_var_vec)
+  mean_vec <- c(1, 1, 1)
   
-  UB <- quantile(estimated_var_vec, 0.975)
-  LB <- quantile(estimated_var_vec, 0.025)
+  covariates <- as.data.frame(mvrnorm(sample_size, mu = mean_vec, Sigma = cor_mat))
   
+  outcome_variable <- 4 + 
+    2*covariates$V1 + 
+    5*covariates$V2 +  
+    8*covariates$V3 +
+    rnorm(sample_size, 0, 5)
   
-  true_var <- list_of_sim_data_for_comp[[x]] %>%
-    lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
+  data_complete <- cbind(outcome_variable, covariates)
+  
+  data_w_missing <- 
+    suppressWarnings(
+      ampute(data_complete, prop = prop, mech = "MAR", patterns = c(0, 1, 1, 1))$amp
+    )
+  
+  return(get(desired_data))
+}
+
+```
+
+## Creating data for simulation
+
+```{r, eval = TRUE}
+set.seed(971423)
+N = 100
+sample_size = 100
+seed = 1:N
+prop = 0.3
+desired_data = "data_w_missing"
+
+# Create list of data frames with missing 
+plan(multisession)
+
+list_of_sim_data <- 
+  future_map(seed, ~data_generator(sample_size, .x, prop, desired_data))
+
+# Obtains one of the data frames to be used for small prototyping. 
+df_w_mis <- list_of_sim_data[[10]]
+
+# Generates uncongenial imputation matrix to be used later. 
+uncon_pred_mat <- make.predictorMatrix(df_w_mis)
+
+uncon_pred_mat[,4] <- 0
+```
+
+# Estimator Code
+
+```{r}
+choose.int <- function(x, n, k) {
+  if(n <= k) return(rep(TRUE, k))
+  u <- choose(n-1, k-1)
+  pick <- x < u
+  if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
+  return(c(pick, y))
+}
+# n is the sample size of the full datasets (n = 1000 for us)
+# k is the # of observations we would like to keep from n = 1000 
+# The value inside sapply is the # of subsamples we would like. 
+n <- 100; k <- 50 ; n_sub_samples <- 1e3
+
+mice_analyzer <- function(mice_objects){
+  mice_objects%>%
+    mice::complete("long") %>%
+    lm(outcome_variable ~ V1 + V2 + V3, data = .) %>%
+    summary() %>%
     broom::tidy() %>%
     dplyr::filter(term == "V1") %>%
     dplyr::select(estimate) %>%
     unlist()
+} 
+non_mice_analyzer <- function(non_mice_objects){
+  lm(formula = outcome_variable ~ V1 + V2 + V3, data = non_mice_objects) %>%
+    summary() %>%
+    broom::tidy() %>%
+    dplyr::filter(term == "V1") %>%
+    dplyr::select(estimate) %>%
+    unlist()
+}
+imp_fun <- function(to_be_imputed){
+  mice(
+    to_be_imputed,
+    seed = 123,
+    m = number_of_imps,
+    method = "pmm",
+    print = FALSE,
+    maxit = number_of_its,
+    predictorMatrix = uncon_pred_mat
+  )
+}
+
+jackknife_estimator <- function(df_w_mis){
   
-  temp_df <- data.frame("point_estimate" = var_point_estimate, 
-                        "UB" = UB, 
-                        "LB" = LB, 
-                        "true_variance" = true_var) %>% tibble::remove_rownames()
+  length_sample_vec <- choose(n, k)
   
-  final_df <- temp_df %>%
-    mutate("is_between" = ifelse(true_variance > LB & true_variance < UB, TRUE, FALSE))
-  
-  return(final_df)
-})
-
-small_sanity_check_df <- do.call(rbind, small_sanity_check)
-
-CI_coverage <- sum(small_sanity_check_df$is_between)/nrow(small_sanity_check_df) * 100
-
-
-# Try larger samples 
-df_w_mis <- list_of_sim_data[[1]]
-
-bootstrap_samples <- lapply(1:100, function(x) (df_w_mis[sample(1:nrow(df_w_mis), 50, replace=TRUE),]) )
-
-clean_samples <- lapply(bootstrap_samples, function(x) as.data.frame(do.call(cbind, x)) %>%
-                          remove_rownames() %>%
-                          as.data.frame())
-
-test_estimator <- function(subsamples){
-  contains_na <- map_lgl(subsamples, ~any(is.na(.x)))
-  
-  for(i in 1:length(subsamples)){
-    if(contains_na[[i]] == TRUE){
-      subsamples[[i]] <- mice(subsamples[[i]], seed = 123, m = 2,method = "pmm", print=FALSE, maxit = 10)
-    } else{
-      subsamples[[i]] <- subsamples[[i]]
-    }
+  if (choose(n, k) > 1e15) {
+    length_sample_vec = 1e15
+  } else {
+    length_sample_vec = choose(n, k)
   }
+  
+  # Column is index for what to include/exclude 
+  
+  # If choose(n,k) is a big number (~1e15), code fails. 
+  sample <- 
+    sapply(sample.int(length_sample_vec, n_sub_samples, replace = FALSE)-1,
+           choose.int, n=n, k=k)
+  
+  drop_d_subsamples <- map(1:ncol(sample),
+                           ~df_w_mis[sample[,.x],])
+  
+  contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
+  
+  to_be_imputed <- drop_d_subsamples[contains_na == TRUE]
+  to_be_analysed <- drop_d_subsamples[contains_na == FALSE]
+  
+  imputed_dfs <- map(to_be_imputed, imp_fun)
+  
+  subsamples_to_be_analysed <- append(imputed_dfs, to_be_analysed)
   
   # Logical test to determine presence of MICE objects 
-  is_mice <- vector("logical", length = length(subsamples))
-  
-  for(i in 1:length(subsamples)){
-    is_mice[[i]] <- ifelse(class(subsamples[[i]]) == "mids", TRUE, FALSE)
-  }
+  is_mice <- map_lgl(subsamples_to_be_analysed, ~class(.x) == "mids")
   
   # Applies appt analysis depending on type 
-  analysis_vector <- vector("numeric", length = length(subsamples))
   
-  for(i in 1:length(subsamples)){
-    sample_size <- nrow(complete(subsamples[[i]],1))
-    if(is_mice[[i]] == TRUE){
-      analysis_vector[[i]] <- subsamples[[i]] %>%
-        mice::complete("all") %>%
-        map(lm, formula = outcome_variable ~ V1 + V2 + V3) %>%
-        map(., summary) %>%
-        lapply(., broom::tidy) %>%
-        do.call(rbind, .) %>%
-        dplyr::filter(term == "V1") %>%
-        dplyr::select(estimate) %>%
-        unlist() %>%
-        mean()
-    } else{
-      analysis_vector[[i]] <- subsamples[[i]] %>%
-        lm(formula = outcome_variable ~ V1 + V2 + V3, data = .) %>%
-        broom::tidy() %>%
-        dplyr::filter(term == "V1") %>%
-        dplyr::select(estimate) %>%
-        unlist()
-    }
-    
-  }
+  mice_objects <- subsamples_to_be_analysed[is_mice == TRUE]
   
-  # Jackknife point estimate
+  non_mice_objects <- subsamples_to_be_analysed[is_mice == FALSE]
   
-  jittered_analysis_vector <- jitter(analysis_vector)
+  mice_res <- map(mice_objects, mice_analyzer)
+  non_mice_res <- map(non_mice_objects, non_mice_analyzer)
   
-  point_estimate_jackknife <- mean(jittered_analysis_vector)
+  analysis_vector <- append(mice_res, non_mice_res) %>%
+    do.call(rbind, .) %>%
+    as.vector()
+  
+  point_estimate_jackknife <- mean(analysis_vector)
   
   # Quantile CI
-  UB <- quantile(jittered_analysis_vector, 0.975)
-  LB <- quantile(jittered_analysis_vector, 0.025)
+  UB <- quantile(analysis_vector, 0.975)
+  LB <- quantile(analysis_vector, 0.025)
   
   return(data.frame("point_estimate" = point_estimate_jackknife, 
                     "UB" = UB, 
                     "LB" = LB) %>% tibble::remove_rownames())
   
 }
+```
 
+# Small Monte Carlo for Jackknife Estimator
+
+```{r, eval = TRUE}
 plan(multisession)
 
-boot_check <- future_lapply(clean_samples, function(x) test_estimator(x), future.seed=TRUE)
+jackknife_var_est <- future_map(list_of_sim_data, jackknife_estimator)
 
+jackknife_var_estimates <- do.call(rbind, jackknife_var_est) %>%
+  as.data.frame()
+```
+
+# Small Monte Carlo for Rubin's Rules
+
+```{r, eval = TRUE}
+plan(multisession)
+
+rubin_var_estimates <- future_map(list_of_sim_data, 
+                                  ~mice(.x, seed = 123, print = FALSE, method = "pmm",
+                                        m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
+                                    mice::complete("long") %>%
+                                    group_by(.imp) %>%
+                                    do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
+                                    as.list() %>%
+                                    .[[-1]] %>%
+                                    pool() %>%
+                                    summary(conf.int = TRUE) %>%
+                                    as.data.frame() %>%
+                                    dplyr::filter(term == "V1") %>%
+                                    dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
+                                    dplyr::rename(point_estimate_rub = estimate, 
+                                                  LB_rub = "2.5 %", 
+                                                  UB_rub = "97.5 %"))
+
+rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
+  as.data.frame()
+
+# Rubin's coverage
+round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
+```
+
+# Organizing Results
+
+```{r, eval = TRUE}
+combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_var_estimates) 
+
+rubin_width <- combined_results$UB_rub - combined_results$LB_rub
+
+jackknife_width <- combined_results$UB - combined_results$LB
+
+combined_results <- cbind(combined_results, rubin_width, jackknife_width)
+
+# % of samples for which the rubin CI is wider than the jackknife one. 
+sum(combined_results$rubin_width > combined_results$jackknife_width) / N * 100
+```
+
+# Analysis of Results
+
+```{r, eval = TRUE}
+# Jackknife coverage probability
+round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
+
+reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%
+  ggplot(data = .,
+         aes(x = value, fill = variable, color = variable)) + 
+  geom_density(aes(y = ..density..), alpha = 0.25) + 
+  theme(axis.title.y = element_blank(), 
+        panel.spacing=unit(1.5,"lines")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        panel.spacing=unit(1.5,"lines"), 
+        strip.text = element_text(
+          size = 9)) + 
+  xlab("Beta_hat_1")
+
+combined_results %>%
+  mutate("jackknife_bias" = point_estimate - 2, 
+         "rubin_bias" = point_estimate_rub - 2) %>%
+  dplyr::select("jackknife_bias", "rubin_bias") %>%
+  reshape2::melt() %>%
+  ggplot(data = .,
+         aes(x = value, fill = variable, color = variable)) + 
+  geom_density(aes(y = ..density..), alpha = 0.25) + 
+  theme(axis.title.y = element_blank(), 
+        panel.spacing=unit(1.5,"lines")) + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank(), 
+        panel.spacing=unit(1.5,"lines"), 
+        strip.text = element_text(
+          size = 9)) + 
+  xlab("Bias of the Jackknife Estimator")
+
+ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) + 
+  geom_point(aes(y = point_estimate, color = "red")) +
+  geom_point(aes(y = 2, alpha = 0.1)) + 
+  geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
+  coord_flip() + 
+  theme_bw() + 
+  labs(
+    x = latex2exp::TeX("$i^{th} dataset"), 
+    y = latex2exp::TeX("$\\widehat{\\sigma^2}")
+  ) + 
+  theme(legend.position="none") + 
+  geom_hline(yintercept = combined_results$true_var)
+```
