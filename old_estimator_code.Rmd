@@ -1,12 +1,11 @@
 ---
-  title: "main_doc"
-format: html
-editor: visual
+title: "Old Estimator Code"
+output: html_notebook
 ---
-  
-  # Dependencies
-  
-  ```{r, message=FALSE}
+      
+# Dependencies
+
+```{r, message=FALSE}
 library(mice)
 library(MASS)
 library(furrr)
@@ -94,16 +93,6 @@ choose.int <- function(x, n, k) {
 # The value inside sapply is the # of subsamples we would like. 
 n <- 100; k <- 50 ; n_sub_samples <- 1e3
 
-mice_analyzer <- function(mice_objects){
-  mice_objects%>%
-    mice::complete("long") %>%
-    lm(outcome_variable ~ V1 + V2 + V3, data = .) %>%
-    summary() %>%
-    broom::tidy() %>%
-    dplyr::filter(term == "V1") %>%
-    dplyr::select(estimate) %>%
-    unlist()
-} 
 non_mice_analyzer <- function(non_mice_objects){
   lm(formula = outcome_variable ~ V1 + V2 + V3, data = non_mice_objects) %>%
     summary() %>%
@@ -112,6 +101,7 @@ non_mice_analyzer <- function(non_mice_objects){
     dplyr::select(estimate) %>%
     unlist()
 }
+
 imp_fun <- function(to_be_imputed){
   mice(
     to_be_imputed,
@@ -141,31 +131,19 @@ jackknife_estimator <- function(df_w_mis){
     sapply(sample.int(length_sample_vec, n_sub_samples, replace = FALSE)-1,
            choose.int, n=n, k=k)
   
+   imputations <- 
+    mice(df_w_mis, m = number_of_imps, maxit = number_of_its, method = "pmm", print = FALSE,
+         predictorMatrix = uncon_pred_mat) %>%
+    complete("long")
+   
+   
+  
   drop_d_subsamples <- map(1:ncol(sample),
-                           ~df_w_mis[sample[,.x],])
+                           ~imputations[sample[,.x],])
+
+  non_mice_res <- map(drop_d_subsamples, non_mice_analyzer)
   
-  contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
-  
-  to_be_imputed <- drop_d_subsamples[contains_na == TRUE]
-  to_be_analysed <- drop_d_subsamples[contains_na == FALSE]
-  
-  imputed_dfs <- map(to_be_imputed, imp_fun)
-  
-  subsamples_to_be_analysed <- append(imputed_dfs, to_be_analysed)
-  
-  # Logical test to determine presence of MICE objects 
-  is_mice <- map_lgl(subsamples_to_be_analysed, ~class(.x) == "mids")
-  
-  # Applies appt analysis depending on type 
-  
-  mice_objects <- subsamples_to_be_analysed[is_mice == TRUE]
-  
-  non_mice_objects <- subsamples_to_be_analysed[is_mice == FALSE]
-  
-  mice_res <- map(mice_objects, mice_analyzer)
-  non_mice_res <- map(non_mice_objects, non_mice_analyzer)
-  
-  analysis_vector <- append(mice_res, non_mice_res) %>%
+  analysis_vector <- non_mice_res %>%
     do.call(rbind, .) %>%
     as.vector()
   
@@ -176,18 +154,18 @@ jackknife_estimator <- function(df_w_mis){
   LB <- quantile(analysis_vector, 0.025)
   
   return(data.frame("point_estimate" = point_estimate_jackknife, 
-                    "UB" = UB, 
-                    "LB" = LB) %>% tibble::remove_rownames())
+                   "UB" = UB, 
+                   "LB" = LB) %>% tibble::remove_rownames())
   
 }
 ```
 
 # Small Monte Carlo for Jackknife Estimator
 
-```{r, eval = TRUE}
+```{r}
 plan(multisession)
 
-jackknife_var_est <- future_map(list_of_sim_data, jackknife_estimator)
+jackknife_var_est <- future_map(list_of_sim_data[1:2], jackknife_estimator)
 
 jackknife_var_estimates <- do.call(rbind, jackknife_var_est) %>%
   as.data.frame()
@@ -201,19 +179,19 @@ plan(multisession)
 rubin_var_estimates <- future_map(list_of_sim_data, 
                                   ~mice(.x, seed = 123, print = FALSE, method = "pmm",
                                         m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
-                                    mice::complete("long") %>%
-                                    group_by(.imp) %>%
-                                    do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
-                                    as.list() %>%
-                                    .[[-1]] %>%
-                                    pool() %>%
-                                    summary(conf.int = TRUE) %>%
-                                    as.data.frame() %>%
-                                    dplyr::filter(term == "V1") %>%
-                                    dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
-                                    dplyr::rename(point_estimate_rub = estimate, 
-                                                  LB_rub = "2.5 %", 
-                                                  UB_rub = "97.5 %"))
+    mice::complete("long") %>%
+    group_by(.imp) %>%
+    do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
+    as.list() %>%
+    .[[-1]] %>%
+    pool() %>%
+    summary(conf.int = TRUE) %>%
+    as.data.frame() %>%
+    dplyr::filter(term == "V1") %>%
+    dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
+    dplyr::rename(point_estimate_rub = estimate, 
+                  LB_rub = "2.5 %", 
+                  UB_rub = "97.5 %"))
 
 rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
   as.data.frame()
@@ -224,7 +202,7 @@ round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nr
 
 # Organizing Results
 
-```{r, eval = TRUE}
+```{r}
 combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_var_estimates) 
 
 rubin_width <- combined_results$UB_rub - combined_results$LB_rub
@@ -239,7 +217,7 @@ sum(combined_results$rubin_width > combined_results$jackknife_width) / N * 100
 
 # Analysis of Results
 
-```{r, eval = TRUE}
+```{r}
 # Jackknife coverage probability
 round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
 
@@ -274,15 +252,15 @@ combined_results %>%
   xlab("Bias of the Jackknife Estimator")
 
 ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) + 
-  geom_point(aes(y = point_estimate, color = "red")) +
-  geom_point(aes(y = 2, alpha = 0.1)) + 
-  geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
-  coord_flip() + 
-  theme_bw() + 
-  labs(
-    x = latex2exp::TeX("$i^{th} dataset"), 
-    y = latex2exp::TeX("$\\widehat{\\sigma^2}")
-  ) + 
-  theme(legend.position="none") + 
-  geom_hline(yintercept = combined_results$true_var)
+      geom_point(aes(y = point_estimate, color = "red")) +
+      geom_point(aes(y = 2, alpha = 0.1)) + 
+      geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
+      coord_flip() + 
+      theme_bw() + 
+      labs(
+        x = latex2exp::TeX("$i^{th} dataset"), 
+        y = latex2exp::TeX("$\\widehat{\\sigma^2}")
+      ) + 
+      theme(legend.position="none") + 
+      geom_hline(yintercept = combined_results$true_var)
 ```

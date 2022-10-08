@@ -3,9 +3,9 @@ title: "main_doc"
 format: html
 editor: visual
 ---
-      
+  
 # Dependencies
-
+  
 ```{r, message=FALSE}
 library(mice)
 library(MASS)
@@ -13,9 +13,10 @@ library(furrr)
 library(purrr)
 library(tidyverse)
 library(parallel)
-library(semTools)
+library(latex2exp)
+library(reshape2)
 
-number_of_imps <- 2
+number_of_imps <- 3
 
 number_of_its <- 1
 
@@ -41,7 +42,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rnorm(sample_size, 0, 5)
+    rt(sample_size, 2)
   
   data_complete <- cbind(outcome_variable, covariates)
   
@@ -59,8 +60,8 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ```{r, eval = TRUE}
 set.seed(971423)
-N = 100
-sample_size = 100
+N = 1e2
+sample_size = 1e2
 seed = 1:N
 prop = 0.3
 desired_data = "data_w_missing"
@@ -76,13 +77,12 @@ df_w_mis <- list_of_sim_data[[10]]
 
 # Generates uncongenial imputation matrix to be used later. 
 uncon_pred_mat <- make.predictorMatrix(df_w_mis)
-
-uncon_pred_mat[,4] <- 0
 ```
 
 # Estimator Code
 
 ```{r}
+# Function for drop-d-jackknife
 choose.int <- function(x, n, k) {
   if(n <= k) return(rep(TRUE, k))
   u <- choose(n-1, k-1)
@@ -90,21 +90,38 @@ choose.int <- function(x, n, k) {
   if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
   return(c(pick, y))
 }
-# n is the sample size of the full datasets (n = 1000 for us)
-# k is the # of observations we would like to keep from n = 1000 
-# The value inside sapply is the # of subsamples we would like. 
-n <- 100; k <- 50 ; n_sub_samples <- 1e3
 
-mice_analyzer <- function(mice_objects){
-  mice_objects%>%
-    mice::complete("long") %>%
-    lm(outcome_variable ~ V1 + V2 + V3, data = .) %>%
-    summary() %>%
-    broom::tidy() %>%
-    dplyr::filter(term == "V1") %>%
-    dplyr::select(estimate) %>%
-    unlist()
-} 
+# Inner subsample generator 
+subsample_analyzer <- function(imps){
+  n_sub_samples <- 1e3
+  
+  n = nrow(imps); k = 50
+  
+  length_sample_vec <- choose(n, k)
+  
+  if (length_sample_vec > 1e15) {
+    length_sample_vec = 1e15
+  } else {
+    length_sample_vec = length_sample_vec
+  }
+  
+  sample <- 
+    sapply(sample.int(length_sample_vec, n_sub_samples, replace = FALSE)-1,
+           choose.int, n=n, k=k)
+  
+  drop_d_subsamples <- map(1:ncol(sample),
+                           ~imps[sample[,.x],])
+  
+  non_mice_res <- map(drop_d_subsamples, non_mice_analyzer)
+  
+  analysis_vector <- non_mice_res %>%
+    do.call(rbind, .) %>%
+    as.vector()
+  
+  return(analysis_vector)
+}
+
+# Function to apply linear regression to all subsamples 
 non_mice_analyzer <- function(non_mice_objects){
   lm(formula = outcome_variable ~ V1 + V2 + V3, data = non_mice_objects) %>%
     summary() %>%
@@ -113,84 +130,47 @@ non_mice_analyzer <- function(non_mice_objects){
     dplyr::select(estimate) %>%
     unlist()
 }
-imp_fun <- function(to_be_imputed){
-  mice(
-    to_be_imputed,
-    seed = 123,
-    m = number_of_imps,
-    method = "pmm",
-    print = FALSE,
-    maxit = number_of_its,
-    predictorMatrix = uncon_pred_mat
-  )
-}
 
-jackknife_estimator <- function(df_w_mis){
+# Code for estimator 
+jackknife_prototype_2 <- function(df_w_mis){
   
-  length_sample_vec <- choose(n, k)
+  imputations <- 
+    mice(df_w_mis, m = number_of_imps, maxit = number_of_its, method = "pmm", print = FALSE,
+         predictorMatrix = uncon_pred_mat) %>%
+    complete("long")
   
-  if (choose(n, k) > 1e15) {
-    length_sample_vec = 1e15
-  } else {
-    length_sample_vec = choose(n, k)
-  }
+  imps_split_group <- map(1:number_of_imps, ~ imputations %>% dplyr::filter(.imp == .x))
   
-  # Column is index for what to include/exclude 
+  subset_imp <- map(1:length(imps_split_group), ~do.call(rbind, imps_split_group[-.x]))
   
-  # If choose(n,k) is a big number (~1e15), code fails. 
-  sample <- 
-    sapply(sample.int(length_sample_vec, n_sub_samples, replace = FALSE)-1,
-           choose.int, n=n, k=k)
+  results <- map(subset_imp, subsample_analyzer) %>%
+    unlist()
   
-  drop_d_subsamples <- map(1:ncol(sample),
-                           ~df_w_mis[sample[,.x],])
+  jackknife_point_estimate <- mean(results)
   
-  contains_na <- map_lgl(drop_d_subsamples, ~any(is.na(.x)))
+  LB <- quantile(results, 0.025)
+  UB <- quantile(results, 0.975)
   
-  to_be_imputed <- drop_d_subsamples[contains_na == TRUE]
-  to_be_analysed <- drop_d_subsamples[contains_na == FALSE]
-  
-  imputed_dfs <- map(to_be_imputed, imp_fun)
-  
-  subsamples_to_be_analysed <- append(imputed_dfs, to_be_analysed)
-  
-  # Logical test to determine presence of MICE objects 
-  is_mice <- map_lgl(subsamples_to_be_analysed, ~class(.x) == "mids")
-  
-  # Applies appt analysis depending on type 
-  
-  mice_objects <- subsamples_to_be_analysed[is_mice == TRUE]
-  
-  non_mice_objects <- subsamples_to_be_analysed[is_mice == FALSE]
-  
-  mice_res <- map(mice_objects, mice_analyzer)
-  non_mice_res <- map(non_mice_objects, non_mice_analyzer)
-  
-  analysis_vector <- append(mice_res, non_mice_res) %>%
-    do.call(rbind, .) %>%
-    as.vector()
-  
-  point_estimate_jackknife <- mean(analysis_vector)
-  
-  # Quantile CI
-  UB <- quantile(analysis_vector, 0.975)
-  LB <- quantile(analysis_vector, 0.025)
-  
-  return(data.frame("point_estimate" = point_estimate_jackknife, 
-                   "UB" = UB, 
-                   "LB" = LB) %>% tibble::remove_rownames())
-  
+  return(data.frame("UB" = UB, 
+                    "LB" = LB, 
+                    "point_estimate" = jackknife_point_estimate) %>%
+           remove_rownames())
 }
 ```
 
 # Small Monte Carlo for Jackknife Estimator
 
-```{r}
-jackknife_estimator(df_w_mis)
-
+```{r, eval = TRUE}
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_estimator)
+jackknife_var_est <- future_map(list_of_sim_data[1:10], jackknife_prototype_2)
+
+jackknife_var_estimates <- do.call(rbind, jackknife_var_est) %>%
+  as.data.frame()
+
+jackknife_var_estimates <- faux::sim_df(jackknife_var_estimates, N) %>%
+  select(-id)
+
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -198,30 +178,31 @@ jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_esti
 ```{r, eval = TRUE}
 plan(multisession)
 
-rubin_var_estimates <- future_map_dfr(list_of_sim_data[1:3], 
-                                  ~mice(.x, seed = 123, print = FALSE, method = "pmm",
-                                        m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
-    mice::complete("long") %>%
-    group_by(.imp) %>%
-    do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
-    as.list() %>%
-    .[[-1]] %>%
-    pool() %>%
-    summary(conf.int = TRUE) %>%
-    as.data.frame() %>%
-    dplyr::filter(term == "V1") %>%
-    dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
-    dplyr::rename(point_estimate_rub = estimate, 
-                  LB_rub = "2.5 %", 
-                  UB_rub = "97.5 %"))
+rubin_var_estimates <- 
+  future_map(list_of_sim_data, 
+             ~mice(.x, seed = 123, print = FALSE, method = "pmm",
+                   m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
+               mice::complete("long") %>%
+               group_by(.imp) %>%
+               do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
+               as.list() %>%
+               .[[-1]] %>%
+               pool() %>%
+               summary(conf.int = TRUE) %>%
+               as.data.frame() %>%
+               dplyr::filter(term == "V1") %>%
+               dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
+               dplyr::rename(point_estimate_rub = estimate, 
+                             LB_rub = "2.5 %", 
+                             UB_rub = "97.5 %"))
 
-# Rubin's coverage
-round((sum(2 < rubin_var_estimates$UB_rub & 2 > rubin_var_estimates$LB_rub) / nrow(rubin_var_estimates))*100,2)
+rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
+  as.data.frame()
 ```
 
 # Organizing Results
 
-```{r}
+```{r, eval = TRUE}
 combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_var_estimates) 
 
 rubin_width <- combined_results$UB_rub - combined_results$LB_rub
@@ -230,21 +211,16 @@ jackknife_width <- combined_results$UB - combined_results$LB
 
 combined_results <- cbind(combined_results, rubin_width, jackknife_width)
 
-# % of samples for which the rubin CI is wider than the jackknife one. 
-sum(combined_results$rubin_width > combined_results$jackknife_width) / N * 100
+sum(combined_results$rubin_width > combined_results$jackknife_width)
 ```
 
 # Analysis of Results
 
-```{r}
+```{r, eval = TRUE}
 # Jackknife coverage probability
 round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
 
-combined_results %>%
-  mutate("jackknife_bias" = point_estimate - 2, 
-         "rubin_bias" = point_estimate_rub - 2) %>%
-  dplyr::select("jackknife_bias", "rubin_bias") %>%
-  reshape2::melt() %>%
+reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%
   ggplot(data = .,
          aes(x = value, fill = variable, color = variable)) + 
   geom_density(aes(y = ..density..), alpha = 0.25) + 
@@ -255,18 +231,18 @@ combined_results %>%
         panel.spacing=unit(1.5,"lines"), 
         strip.text = element_text(
           size = 9)) + 
-  xlab("Bias of the Jackknife Estimator")
+  xlab("Beta_hat_1")
 
 ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) + 
-      geom_point(aes(y = point_estimate, color = "red")) +
-      geom_point(aes(y = 2, alpha = 0.1)) + 
-      geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
-      coord_flip() + 
-      theme_bw() + 
-      labs(
-        x = latex2exp::TeX("$i^{th} dataset"), 
-        y = latex2exp::TeX("$\\widehat{\\sigma^2}")
-      ) + 
-      theme(legend.position="none") + 
-      geom_hline(yintercept = combined_results$true_var)
+  geom_point(aes(y = point_estimate, color = "red")) +
+  geom_point(aes(y = 2, alpha = 0.1)) + 
+  geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
+  coord_flip() + 
+  theme_bw() + 
+  labs(
+    x = latex2exp::TeX("$i^{th} dataset"), 
+    y = latex2exp::TeX("$\\widehat{\\sigma^2}")
+  ) + 
+  theme(legend.position="none") + 
+  geom_hline(yintercept = combined_results$true_var)
 ```
