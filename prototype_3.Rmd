@@ -42,7 +42,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rt(sample_size, 2)
+    rlnorm(sample_size, 0, (1/4)^2)
   
   data_complete <- cbind(outcome_variable, covariates)
   
@@ -74,10 +74,7 @@ list_of_sim_data <-
 
 # Obtains one of the data frames to be used for small prototyping. 
 df_w_mis <- list_of_sim_data[[10]]
-```
 
-# Estimator Prototype 3
-```{r}
 # Function for drop-d-jackknife
 choose.int <- function(x, n, k) {
   if(n <= k) return(rep(TRUE, k))
@@ -86,9 +83,12 @@ choose.int <- function(x, n, k) {
   if (pick) y <- choose.int(x, n-1, k-1) else y <- choose.int(x-u, n-1, k)
   return(c(pick, y))
 }
-  
+```
+
+# Estimator Prototype 3
+```{r}
 jackknife_prototype_3 <- function(df_w_mis){
-  n_sub_samples <- 1e4
+  n_sub_samples <- 1e3
   
   n = nrow(df_w_mis); k = 50
   
@@ -113,27 +113,34 @@ jackknife_prototype_3 <- function(df_w_mis){
                          model = "pmm", 
                          posit_y = 1, 
                          posit_x = c(2:4), 
-                         k = 10
+                         k = 2
                        )) %>%
                        select(-"outcome_variable") %>%
                        as.matrix())
   
-  pseudo_estimates <- vapply(imputations, function(x) .lm.fit(x = x[,1:3], 
-                                                              y = x[,4])$coefficients[1], numeric(1))
+  subset_imp <- map(1:length(imputations), ~imputations[-.x])
   
-  jackknife_point_estimate <- mean.default(pseudo_estimates)
+  pseudo_estimates <- 
+    map(subset_imp, ~vapply(.x, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1)))
   
-  LB <- quantile(pseudo_estimates, 0.025)
-  UB <- quantile(pseudo_estimates, 0.975)
+  # Trimming the pseudo_estimate_vector 
+  #p95 <- quantile(unlist(pseudo_estimates), 0.95)
+  #p05 <- quantile(unlist(pseudo_estimates), 0.05)
+  #pseudo_estimates_trimmed <- 
+    #unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
+  pseudo_estimates_trimmed <- unlist(pseudo_estimates)
+  # Obtaining point estimates, and confidence bounds 
+  jackknife_point_estimate <- mean.default(pseudo_estimates_trimmed)
+  
+  LB <- quantile(pseudo_estimates_trimmed, 0.025)
+  UB <- quantile(pseudo_estimates_trimmed, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
                     "point_estimate" = jackknife_point_estimate) %>%
            remove_rownames())
+  
 }
-
-jackknife_prototype_3(df_w_mis)
-      
 ```
 
 # Small Monte Carlo for Jackknife Estimator
