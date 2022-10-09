@@ -16,7 +16,7 @@ library(latex2exp)
 library(reshape2)
 library(miceFast)
 
-number_of_imps <- 3
+number_of_imps <- 30
 
 number_of_its <- 1
 
@@ -90,7 +90,7 @@ choose.int <- function(x, n, k) {
 jackknife_prototype_3 <- function(df_w_mis){
   n_sub_samples <- 1e3
   
-  n = nrow(df_w_mis); k = 50
+  n = nrow(df_w_mis); k = 30
   
   length_sample_vec <- choose(n, k)
   
@@ -113,22 +113,22 @@ jackknife_prototype_3 <- function(df_w_mis){
                          model = "pmm", 
                          posit_y = 1, 
                          posit_x = c(2:4), 
-                         k = 2
+                         k = number_of_imps
                        )) %>%
                        select(-"outcome_variable") %>%
                        as.matrix())
   
-  subset_imp <- map(1:length(imputations), ~imputations[-.x])
+  # subset_imp <- map(1:length(imputations), ~imputations[-.x])
   
   pseudo_estimates <- 
-    map(subset_imp, ~vapply(.x, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1)))
+    vapply(imputations, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
   
   # Trimming the pseudo_estimate_vector 
-  #p95 <- quantile(unlist(pseudo_estimates), 0.95)
-  #p05 <- quantile(unlist(pseudo_estimates), 0.05)
-  #pseudo_estimates_trimmed <- 
-    #unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
-  pseudo_estimates_trimmed <- unlist(pseudo_estimates)
+  p95 <- quantile(unlist(pseudo_estimates), 0.95)
+  p05 <- quantile(unlist(pseudo_estimates), 0.05)
+  pseudo_estimates_trimmed <- 
+    unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
+  
   # Obtaining point estimates, and confidence bounds 
   jackknife_point_estimate <- mean.default(pseudo_estimates_trimmed)
   
@@ -157,9 +157,9 @@ jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prot
 plan(multisession)
 
 rubin_var_estimates <- 
-  future_map(list_of_sim_data[1:10], 
+  future_map_dfr(list_of_sim_data[1:10], 
              ~mice(.x, seed = 123, print = FALSE, method = "pmm",
-                   m = number_of_imps, maxit = number_of_its,  predictorMatrix = uncon_pred_mat) %>%
+                   m = number_of_imps, maxit = number_of_its) %>%
                mice::complete("long") %>%
                group_by(.imp) %>%
                do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -173,9 +173,6 @@ rubin_var_estimates <-
                dplyr::rename(point_estimate_rub = estimate, 
                              LB_rub = "2.5 %", 
                              UB_rub = "97.5 %"))
-
-rubin_var_estimates <- do.call(rbind, rubin_var_estimates) %>%
-  as.data.frame()
 ```
 
 # Organizing Results
