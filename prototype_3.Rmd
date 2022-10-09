@@ -16,7 +16,7 @@ library(latex2exp)
 library(reshape2)
 library(miceFast)
 
-number_of_imps <- 30
+number_of_imps <- 10
 
 number_of_its <- 1
 
@@ -42,7 +42,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rlnorm(sample_size, 0, (1/4)^2)
+    rlnorm(sample_size, 0, 1/16)
   
   data_complete <- cbind(outcome_variable, covariates)
   
@@ -53,7 +53,6 @@ data_generator <- function(sample_size, seed, prop, desired_data){
   
   return(get(desired_data))
 }
-
 ```
 
 ## Creating data for simulation
@@ -88,9 +87,13 @@ choose.int <- function(x, n, k) {
 # Estimator Prototype 3
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
-  n_sub_samples <- 1e3
   
-  n = nrow(df_w_mis); k = 30
+  complete_point_estimate <- 
+    lm(outcome_variable ~., data = df_w_mis)$coefficients[2]
+  
+  n_sub_samples <- 100
+  
+  n = nrow(df_w_mis); k = 99
   
   length_sample_vec <- choose(n, k)
   
@@ -110,7 +113,7 @@ jackknife_prototype_3 <- function(df_w_mis){
   imputations <- map(drop_d_subsamples, ~.x %>%
                        mutate(., outcome_imputed = fill_NA_N(
                          x = .,
-                         model = "pmm", 
+                         model = "lm_noise", 
                          posit_y = 1, 
                          posit_x = c(2:4), 
                          k = number_of_imps
@@ -129,16 +132,22 @@ jackknife_prototype_3 <- function(df_w_mis){
   pseudo_estimates_trimmed <- 
     unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
   
-  # Obtaining point estimates, and confidence bounds 
+  # Obtaining point estimate from trimmed 
   jackknife_point_estimate <- mean.default(pseudo_estimates_trimmed)
   
-  LB <- quantile(pseudo_estimates_trimmed, 0.025)
-  UB <- quantile(pseudo_estimates_trimmed, 0.975)
+  corrected_point_estimates <- 
+    pseudo_estimates_trimmed - (jackknife_point_estimate - complete_point_estimate)
+  
+  corrected_jackknife_estimate <- mean(corrected_point_estimates)
+  
+  LB <- quantile(corrected_point_estimates, 0.025)
+  UB <- quantile(corrected_point_estimates, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
-                    "point_estimate" = jackknife_point_estimate) %>%
+                    "point_estimate" = corrected_jackknife_estimate) %>%
            remove_rownames())
+  
   
 }
 ```
@@ -146,9 +155,11 @@ jackknife_prototype_3 <- function(df_w_mis){
 # Small Monte Carlo for Jackknife Estimator
 
 ```{r, eval = TRUE}
+tic()
 plan(multisession)
 
 jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prototype_3)
+toc()
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -158,21 +169,21 @@ plan(multisession)
 
 rubin_var_estimates <- 
   future_map_dfr(list_of_sim_data[1:10], 
-             ~mice(.x, seed = 123, print = FALSE, method = "pmm",
-                   m = number_of_imps, maxit = number_of_its) %>%
-               mice::complete("long") %>%
-               group_by(.imp) %>%
-               do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
-               as.list() %>%
-               .[[-1]] %>%
-               pool() %>%
-               summary(conf.int = TRUE) %>%
-               as.data.frame() %>%
-               dplyr::filter(term == "V1") %>%
-               dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
-               dplyr::rename(point_estimate_rub = estimate, 
-                             LB_rub = "2.5 %", 
-                             UB_rub = "97.5 %"))
+                 ~mice(.x, seed = 123, print = FALSE, method = "pmm",
+                       m = number_of_imps, maxit = number_of_its) %>%
+                   mice::complete("long") %>%
+                   group_by(.imp) %>%
+                   do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
+                   as.list() %>%
+                   .[[-1]] %>%
+                   pool() %>%
+                   summary(conf.int = TRUE) %>%
+                   as.data.frame() %>%
+                   dplyr::filter(term == "V1") %>%
+                   dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
+                   dplyr::rename(point_estimate_rub = estimate, 
+                                 LB_rub = "2.5 %", 
+                                 UB_rub = "97.5 %"))
 ```
 
 # Organizing Results
