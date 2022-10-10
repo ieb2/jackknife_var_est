@@ -43,7 +43,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rlnorm(sample_size, 0, 1/16)
+    rnorm(sample_size, 0, abs(1/covariates$V1))
   
   data_complete <- cbind(outcome_variable, covariates)
   
@@ -89,9 +89,17 @@ choose.int <- function(x, n, k) {
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
   
+  full_data_estimate <- 
+    mice(df_w_mis, m = 2, maxit = 1, method = "pmm", print = FALSE) %>%
+    with(., lm(outcome_variable ~ V1+V2+V3)) %>%
+    pool() %>%
+    mice::tidy() %>%
+    filter(term == "V1") %>%
+    select(estimate, df, riv)
+  
   n_sub_samples <- 1e3
   
-  n = nrow(df_w_mis); k = 30
+  n = nrow(df_w_mis); k = 20
   
   length_sample_vec <- choose(n, k)
   
@@ -109,11 +117,12 @@ jackknife_prototype_3 <- function(df_w_mis){
                            ~df_w_mis[sample[,.x],])
   
   imputations <- map(drop_d_subsamples, ~.x %>%
-                       mutate(., outcome_imputed = fill_NA(
+                       mutate(., outcome_imputed = fill_NA_N(
                          x = .,
-                         model = "lm_noise", 
+                         model = "pmm", 
                          posit_y = 1, 
-                         posit_x = c(2:4)
+                         posit_x = c(2:4), 
+                         k = number_of_imps
                        )) %>%
                        select(-"outcome_variable") %>%
                        as.matrix())
@@ -121,9 +130,12 @@ jackknife_prototype_3 <- function(df_w_mis){
   pseudo_estimates <- 
     vapply(imputations, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
   
-  # Obtaining point estimate from trimmed 
-  jackknife_point_estimate <- mean.default(pseudo_estimates)
+  weights <- (1/(abs(pseudo_estimates - full_data_estimate$estimate))) / 
+    sum((1/(abs(pseudo_estimates - full_data_estimate$estimate))))
   
+  # Obtaining point estimate from trimmed 
+  jackknife_point_estimate <- weighted.mean(pseudo_estimates, weights)
+
   LB <- quantile(pseudo_estimates, 0.025)
   UB <- quantile(pseudo_estimates, 0.975)
   
@@ -131,8 +143,8 @@ jackknife_prototype_3 <- function(df_w_mis){
                     "LB" = LB, 
                     "point_estimate" = jackknife_point_estimate) %>%
            remove_rownames())
-
-
+  
+  
 }
 ```
 
@@ -165,7 +177,7 @@ rubin_var_estimates <-
                    dplyr::select(c(estimate, "2.5 %", "97.5 %")) %>%
                    dplyr::rename(point_estimate_rub = estimate, 
                                  LB_rub = "2.5 %", 
-                                 UB_rub = "97.5 %"))
+                                 UB_rub = "97.5 %")) 
 ```
 
 # Organizing Results
@@ -204,7 +216,7 @@ reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%
 ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) + 
   geom_point(aes(y = point_estimate, color = "red")) +
   geom_point(aes(y = 2, alpha = 0.1)) + 
-  geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 1)) + 
+  geom_errorbar(aes(ymin = LB, ymax = UB, alpha = 0.01)) + 
   coord_flip() + 
   theme_bw() + 
   labs(
@@ -216,10 +228,7 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
 ```
 
 
-
-
 ```{r}
-
 bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates_trimmed)/nrow(df_w_mis))
 
 
