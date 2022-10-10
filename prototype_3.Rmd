@@ -22,6 +22,9 @@ number_of_imps <- 10
 number_of_its <- 5
 
 options(future.rng.onMisuse = 'ignore')
+
+df_w_mis <- list_of_sim_data[[sample(1:N, 1, replace = TRUE)]]
+
 ```
 
 # Data Simulation
@@ -43,7 +46,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rnorm(sample_size, 0, abs(1/covariates$V1))
+    rnorm(sample_size, 0, abs(covariates$V1)*2)
   
   data_complete <- cbind(outcome_variable, covariates)
   
@@ -89,6 +92,7 @@ choose.int <- function(x, n, k) {
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
   
+  
   full_data_estimate <- 
     mice(df_w_mis, m = 2, maxit = 1, method = "pmm", print = FALSE) %>%
     with(., lm(outcome_variable ~ V1+V2+V3)) %>%
@@ -99,7 +103,7 @@ jackknife_prototype_3 <- function(df_w_mis){
   
   n_sub_samples <- 1e3
   
-  n = nrow(df_w_mis); k = 20
+  n = nrow(df_w_mis); k = 30
   
   length_sample_vec <- choose(n, k)
   
@@ -130,20 +134,25 @@ jackknife_prototype_3 <- function(df_w_mis){
   pseudo_estimates <- 
     vapply(imputations, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
   
-  weights <- (1/(abs(pseudo_estimates - full_data_estimate$estimate))) / 
-    sum((1/(abs(pseudo_estimates - full_data_estimate$estimate))))
+  
+  p95 <- quantile(pseudo_estimates, 0.95)
+  p05 <- quantile(pseudo_estimates, 0.05)
+  pseudo_estimates_trimmed <- (pseudo_estimates[which(pseudo_estimates <= p95 & pseudo_estimates >= p05)])
+  
+  
+  weights <- (1/(abs(pseudo_estimates_trimmed - full_data_estimate$estimate))) / 
+    sum((1/(abs(pseudo_estimates_trimmed - full_data_estimate$estimate))))
   
   # Obtaining point estimate from trimmed 
-  jackknife_point_estimate <- weighted.mean(pseudo_estimates, weights)
-
-  LB <- quantile(pseudo_estimates, 0.025)
-  UB <- quantile(pseudo_estimates, 0.975)
+  jackknife_point_estimate <- weighted.mean(pseudo_estimates_trimmed, weights)
+  
+  LB <- quantile(pseudo_estimates_trimmed, 0.025)
+  UB <- quantile(pseudo_estimates_trimmed, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
                     "point_estimate" = jackknife_point_estimate) %>%
            remove_rownames())
-  
   
 }
 ```
@@ -153,7 +162,7 @@ jackknife_prototype_3 <- function(df_w_mis){
 ```{r, eval = TRUE}
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prototype_3)
+jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:100], jackknife_prototype_3)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -162,7 +171,7 @@ jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prot
 plan(multisession)
 
 rubin_var_estimates <- 
-  future_map_dfr(list_of_sim_data[1:10], 
+  future_map_dfr(list_of_sim_data[1:100], 
                  ~mice(.x, seed = 123, print = FALSE, method = "pmm",
                        m = number_of_imps, maxit = number_of_its) %>%
                    mice::complete("long") %>%
@@ -234,6 +243,24 @@ bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_esti
 
 LB_var <- jackknife_point_estimate - bound  
 UB_var <- jackknife_point_estimate + bound
+
+weights <- (1/(abs(pseudo_estimates - full_data_estimate$estimate))) / 
+  sum((1/(abs(pseudo_estimates - full_data_estimate$estimate))))
+
+# Obtaining point estimate from trimmed 
+jackknife_point_estimate <- weighted.mean(pseudo_estimates, weights)
+
+
+bound <- 
+  qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates)/nrow(df_w_mis))
+
+LB_var <- mean(pseudo_estimates_trimmed) - bound  
+UB_var <- mean(pseudo_estimates_trimmed) + bound
+
+
+p95 <- quantile(pseudo_estimates, 0.95)
+p05 <- quantile(pseudo_estimates, 0.05)
+pseudo_estimates_trimmed <- (pseudo_estimates[which(pseudo_estimates <= p95 & pseudo_estimates >= p05)])
 ```
 
 
