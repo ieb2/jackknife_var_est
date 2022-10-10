@@ -17,13 +17,11 @@ library(reshape2)
 library(miceFast)
 library(tictoc)
 
-number_of_imps <- 10
+number_of_imps <- 2
 
-number_of_its <- 5
+number_of_its <- 1
 
 options(future.rng.onMisuse = 'ignore')
-
-df_w_mis <- list_of_sim_data[[sample(1:N, 1, replace = TRUE)]]
 
 ```
 
@@ -76,7 +74,8 @@ list_of_sim_data <-
   future_map(seed, ~data_generator(sample_size, .x, prop, desired_data))
 
 # Obtains one of the data frames to be used for small prototyping. 
-df_w_mis <- list_of_sim_data[[10]]
+
+df_w_mis <- list_of_sim_data[[sample(1:N, 1, replace = TRUE)]]
 
 # Function for drop-d-jackknife
 choose.int <- function(x, n, k) {
@@ -92,16 +91,11 @@ choose.int <- function(x, n, k) {
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
   
+  imps <- 
+    mice(df_w_mis, m = number_of_imps, maxit = number_of_its, method = "norm", print = FALSE) %>%
+    complete("all")
   
-  full_data_estimate <- 
-    mice(df_w_mis, m = 2, maxit = 1, method = "pmm", print = FALSE) %>%
-    with(., lm(outcome_variable ~ V1+V2+V3)) %>%
-    pool() %>%
-    mice::tidy() %>%
-    filter(term == "V1") %>%
-    select(estimate, df, riv)
-  
-  n_sub_samples <- 1e3
+  n_sub_samples <- 1e4
   
   n = nrow(df_w_mis); k = 30
   
@@ -117,42 +111,25 @@ jackknife_prototype_3 <- function(df_w_mis){
     sapply(sample.int(length_sample_vec, n_sub_samples, replace = FALSE)-1,
            choose.int, n=n, k=k)
   
-  drop_d_subsamples <- map(1:ncol(sample),
-                           ~df_w_mis[sample[,.x],])
+  drop_d_subsamples <- lapply(1:number_of_imps, function(x)
+    map(1:ncol(sample),
+        ~as.matrix(imps[[x]][sample[,.x],])))
   
-  imputations <- map(drop_d_subsamples, ~.x %>%
-                       mutate(., outcome_imputed = fill_NA_N(
-                         x = .,
-                         model = "pmm", 
-                         posit_y = 1, 
-                         posit_x = c(2:4), 
-                         k = number_of_imps
-                       )) %>%
-                       select(-"outcome_variable") %>%
-                       as.matrix())
   
   pseudo_estimates <- 
-    vapply(imputations, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
+    unlist(map(drop_d_subsamples,
+               ~vapply(.x, function(x) .lm.fit(x = x[,2:4], y = x[,1])$coefficients[1], numeric(1))))
   
+  LB <- quantile(pseudo_estimates, 0.025)
+  UB <- quantile(pseudo_estimates, 0.975)
   
-  p95 <- quantile(pseudo_estimates, 0.95)
-  p05 <- quantile(pseudo_estimates, 0.05)
-  pseudo_estimates_trimmed <- (pseudo_estimates[which(pseudo_estimates <= p95 & pseudo_estimates >= p05)])
-  
-  
-  weights <- (1/(abs(pseudo_estimates_trimmed - full_data_estimate$estimate))) / 
-    sum((1/(abs(pseudo_estimates_trimmed - full_data_estimate$estimate))))
-  
-  # Obtaining point estimate from trimmed 
-  jackknife_point_estimate <- weighted.mean(pseudo_estimates_trimmed, weights)
-  
-  LB <- quantile(pseudo_estimates_trimmed, 0.025)
-  UB <- quantile(pseudo_estimates_trimmed, 0.975)
+  point_estimate <- mean(pseudo_estimates)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
-                    "point_estimate" = jackknife_point_estimate) %>%
+                    "point_estimate" = point_estimate) %>%
            remove_rownames())
+  
   
 }
 ```
@@ -162,7 +139,7 @@ jackknife_prototype_3 <- function(df_w_mis){
 ```{r, eval = TRUE}
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:100], jackknife_prototype_3)
+jackknife_var_estimates <- future_map_dfr(list_of_sim_data[10:20], jackknife_prototype_3)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -237,6 +214,7 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
 ```
 
 
+# Trash Can 
 ```{r}
 bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates_trimmed)/nrow(df_w_mis))
 
