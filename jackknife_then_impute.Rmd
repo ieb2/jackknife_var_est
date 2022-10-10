@@ -44,7 +44,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     2*covariates$V1 + 
     5*covariates$V2 +  
     8*covariates$V3 +
-    rnorm(sample_size, 0, abs(1/covariates$V1))
+    rnorm(sample_size, 0, abs(covariates$V1)*2)
   
   data_complete <- cbind(outcome_variable, covariates)
   
