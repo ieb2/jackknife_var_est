@@ -15,10 +15,11 @@ library(parallel)
 library(latex2exp)
 library(reshape2)
 library(miceFast)
+library(tictoc)
 
 number_of_imps <- 10
 
-number_of_its <- 1
+number_of_its <- 5
 
 options(future.rng.onMisuse = 'ignore')
 ```
@@ -50,8 +51,8 @@ data_generator <- function(sample_size, seed, prop, desired_data){
     suppressWarnings(
       ampute(data_complete, prop = prop, mech = "MAR", patterns = c(0, 1, 1, 1))$amp
     )
-  
   return(get(desired_data))
+  
 }
 ```
 
@@ -88,12 +89,9 @@ choose.int <- function(x, n, k) {
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
   
-  complete_point_estimate <- 
-    lm(outcome_variable ~., data = df_w_mis)$coefficients[2]
+  n_sub_samples <- 1e3
   
-  n_sub_samples <- 100
-  
-  n = nrow(df_w_mis); k = 99
+  n = nrow(df_w_mis); k = 30
   
   length_sample_vec <- choose(n, k)
   
@@ -111,55 +109,39 @@ jackknife_prototype_3 <- function(df_w_mis){
                            ~df_w_mis[sample[,.x],])
   
   imputations <- map(drop_d_subsamples, ~.x %>%
-                       mutate(., outcome_imputed = fill_NA_N(
+                       mutate(., outcome_imputed = fill_NA(
                          x = .,
                          model = "lm_noise", 
                          posit_y = 1, 
-                         posit_x = c(2:4), 
-                         k = number_of_imps
+                         posit_x = c(2:4)
                        )) %>%
                        select(-"outcome_variable") %>%
                        as.matrix())
   
-  # subset_imp <- map(1:length(imputations), ~imputations[-.x])
-  
   pseudo_estimates <- 
     vapply(imputations, function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
   
-  # Trimming the pseudo_estimate_vector 
-  p95 <- quantile(unlist(pseudo_estimates), 0.95)
-  p05 <- quantile(unlist(pseudo_estimates), 0.05)
-  pseudo_estimates_trimmed <- 
-    unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
-  
   # Obtaining point estimate from trimmed 
-  jackknife_point_estimate <- mean.default(pseudo_estimates_trimmed)
+  jackknife_point_estimate <- mean.default(pseudo_estimates)
   
-  corrected_point_estimates <- 
-    pseudo_estimates_trimmed - (jackknife_point_estimate - complete_point_estimate)
-  
-  corrected_jackknife_estimate <- mean(corrected_point_estimates)
-  
-  LB <- quantile(corrected_point_estimates, 0.025)
-  UB <- quantile(corrected_point_estimates, 0.975)
+  LB <- quantile(pseudo_estimates, 0.025)
+  UB <- quantile(pseudo_estimates, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
-                    "point_estimate" = corrected_jackknife_estimate) %>%
+                    "point_estimate" = jackknife_point_estimate) %>%
            remove_rownames())
-  
-  
+
+
 }
 ```
 
 # Small Monte Carlo for Jackknife Estimator
 
 ```{r, eval = TRUE}
-tic()
 plan(multisession)
 
 jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prototype_3)
-toc()
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -236,6 +218,14 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
 
 
 
+```{r}
+
+bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates_trimmed)/nrow(df_w_mis))
+
+
+LB_var <- jackknife_point_estimate - bound  
+UB_var <- jackknife_point_estimate + bound
+```
 
 
 
