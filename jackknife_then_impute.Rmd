@@ -134,11 +134,17 @@ jackknife_prototype_3 <- function(df_w_mis){
   weights <- (1/(abs(pseudo_estimates - full_data_estimate$estimate))) / 
     sum((1/(abs(pseudo_estimates - full_data_estimate$estimate))))
   
+  # Trimming the pseudo_estimate_vector 
+  p95 <- quantile(unlist(pseudo_estimates), 0.95)
+  p05 <- quantile(unlist(pseudo_estimates), 0.05)
+  pseudo_estimates_trimmed <- 
+    unlist(pseudo_estimates)[which(unlist(pseudo_estimates) <= p95 & unlist(pseudo_estimates) >= p05)]
+  
   # Obtaining point estimate from trimmed 
   jackknife_point_estimate <- weighted.mean(pseudo_estimates, weights)
 
-  LB <- quantile(pseudo_estimates, 0.025)
-  UB <- quantile(pseudo_estimates, 0.975)
+  LB <- quantile(pseudo_estimates_trimmed, 0.025)
+  UB <- quantile(pseudo_estimates_trimmed, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
