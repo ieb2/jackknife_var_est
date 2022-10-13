@@ -17,10 +17,6 @@ library(reshape2)
 library(miceFast)
 library(tictoc)
 
-number_of_imps <- 2
-
-number_of_its <- 1
-
 options(future.rng.onMisuse = 'ignore')
 
 ```
@@ -61,7 +57,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ```{r, eval = TRUE}
 set.seed(971423)
-N = 1e2
+N = 1e4
 sample_size = 1e2
 seed = 1:N
 prop = 0.3
@@ -90,14 +86,21 @@ choose.int <- function(x, n, k) {
 # Estimator Prototype 3
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
-  
-  imps <- 
-    mice(df_w_mis, m = number_of_imps, maxit = number_of_its, method = "norm", print = FALSE) %>%
+  m = 2
+  imputations <- mice(df_w_mis, m = m, maxit = 2, method = "midastouch", print = FALSE) %>%
     complete("all")
   
-  n_sub_samples <- 1e4
+  imputations_df_estimate <- imputations %>%
+    lapply(lm, formula = outcome_variable ~ V1 + V2 + V3) %>%
+    pool() %>%
+    broom::tidy() %>%
+    filter(term == "V1") %>%
+    select("df") %>%
+    unlist()
   
-  n = nrow(df_w_mis); k = 30
+  n_sub_samples <- 500
+  
+  n = nrow(df_w_mis); k = 70
   
   length_sample_vec <- choose(n, k)
   
@@ -113,23 +116,33 @@ jackknife_prototype_3 <- function(df_w_mis){
   
   drop_d_subsamples <- lapply(1:number_of_imps, function(x)
     map(1:ncol(sample),
-        ~as.matrix(imps[[x]][sample[,.x],])))
-  
+        ~as.matrix(imputations[[x]][sample[,.x],])))
   
   pseudo_estimates <- 
-    unlist(map(drop_d_subsamples,
-               ~vapply(.x, function(x) .lm.fit(x = x[,2:4], y = x[,1])$coefficients[1], numeric(1))))
+    map(drop_d_subsamples,
+        ~vapply(.x, function(x) .lm.fit(x = x[,2:4], y = x[,1])$coefficients[1], numeric(1)))
   
-  LB <- quantile(pseudo_estimates, 0.025)
-  UB <- quantile(pseudo_estimates, 0.975)
+  within_imp_var <- mean(vapply(pseudo_estimates, function(x) sd(x)/sqrt(length(x)), numeric(1)))
+  between_imp_var <- mean(vapply(pseudo_estimates, var, numeric(1)))
   
-  point_estimate <- mean(pseudo_estimates)
+  total_var <- within_imp_var + between_imp_var + between_imp_var/m
+  total_se <- sqrt(total_var)
+  
+  point_estimates <- vapply(pseudo_estimates, mean, numeric(1))
+  
+  point_estimate <- mean(point_estimates)
+  
+  critical_value <- qt(p = 0.025, df = imputations_df_estimate, lower.tail = FALSE)
+  
+  bound <- critical_value*total_se
+  
+  LB <- point_estimate - bound
+  UB <- point_estimate + bound
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
                     "point_estimate" = point_estimate) %>%
            remove_rownames())
-  
   
 }
 ```
@@ -139,7 +152,7 @@ jackknife_prototype_3 <- function(df_w_mis){
 ```{r, eval = TRUE}
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data[10:20], jackknife_prototype_3)
+jackknife_var_estimates <- future_map_dfr(list_of_sim_data, jackknife_prototype_3)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -148,9 +161,9 @@ jackknife_var_estimates <- future_map_dfr(list_of_sim_data[10:20], jackknife_pro
 plan(multisession)
 
 rubin_var_estimates <- 
-  future_map_dfr(list_of_sim_data[1:100], 
+  future_map_dfr(list_of_sim_data, 
                  ~mice(.x, seed = 123, print = FALSE, method = "pmm",
-                       m = number_of_imps, maxit = number_of_its) %>%
+                       m = 10, maxit = 5) %>%
                    mice::complete("long") %>%
                    group_by(.imp) %>%
                    do(model = lm(outcome_variable ~ V1 + V2 + V3, data = .)) %>%
@@ -166,18 +179,42 @@ rubin_var_estimates <-
                                  UB_rub = "97.5 %")) 
 ```
 
+# MC for bootimpute 
+```{r}
+library(bootImpute)
+
+boot_analyzer <- function(df_w_mis){
+  boot_impute <- bootMice(df_w_mis, nBoot = 200, nImp = 2, nCores = 1, seed = 123, print = FALSE)
+  boot_impute_mat <- lapply(boot_impute, as.matrix)
+  
+  point_estimates <- vapply(boot_impute_mat, function(x) .lm.fit(x = x[,2:4], y = x[,1])$coefficients[1], numeric(1))
+  LB <- quantile(point_estimates, 0.025)
+  UB <- quantile(point_estimates, 0.975)
+  
+  return(data.frame("UB_boot" = UB, 
+                    "LB_boot" = LB, 
+                    "point_estimate_boot" = mean(point_estimates)) %>%
+           remove_rownames())
+}
+
+plan(multisession)
+
+boot_estimates <- future_map_dfr(list_of_sim_data, boot_analyzer)
+```
+
+
 # Organizing Results
 
 ```{r, eval = TRUE}
-combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_var_estimates) 
+combined_results <- cbind(true_var = 2, rubin_var_estimates, jackknife_var_estimates, boot_estimates) 
 
 rubin_width <- combined_results$UB_rub - combined_results$LB_rub
 
 jackknife_width <- combined_results$UB - combined_results$LB
 
-combined_results <- cbind(combined_results, rubin_width, jackknife_width)
+boot_width <- combined_results$UB_boot - combined_results$LB_boot
 
-sum(combined_results$rubin_width > combined_results$jackknife_width)
+combined_results <- cbind(combined_results, rubin_width, jackknife_width, boot_width)
 ```
 
 # Analysis of Results
@@ -186,7 +223,12 @@ sum(combined_results$rubin_width > combined_results$jackknife_width)
 # Jackknife coverage probability
 round((sum(combined_results$true_var < combined_results$UB & combined_results$true_var > combined_results$LB) / nrow(combined_results))*100,2)
 
-reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%
+# Coverage: 
+# Jackknife -> 96 
+# Boot -> 70
+# Rubin -> 88
+
+reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate", "point_estimate_boot")]) %>%
   ggplot(data = .,
          aes(x = value, fill = variable, color = variable)) + 
   geom_density(aes(y = ..density..), alpha = 0.25) + 
@@ -197,7 +239,9 @@ reshape2::melt(combined_results[c("point_estimate_rub", "point_estimate")]) %>%
         panel.spacing=unit(1.5,"lines"), 
         strip.text = element_text(
           size = 9)) + 
-  xlab("Beta_hat_1")
+  labs(
+    x = latex2exp::TeX("$\\widehat{\\beta_1}")
+  ) 
 
 ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) + 
   geom_point(aes(y = point_estimate, color = "red")) +
@@ -213,34 +257,18 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
   geom_hline(yintercept = combined_results$true_var)
 ```
 
+We had the most appropriate coverage; however, also had somewhat large CI. Also, our point estimates seem to be centered between Rubin and Bootstrap, (how to interpret?) 
 
-# Trash Can 
+All had bad-is point estimates, but reasonable given heteroskedastic errors. (Isn't OLS point estimator unbiased under heteroskedastic errors?)
+
+
+### Trash Can 
 ```{r}
 bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates_trimmed)/nrow(df_w_mis))
 
-
 LB_var <- jackknife_point_estimate - bound  
 UB_var <- jackknife_point_estimate + bound
-
-weights <- (1/(abs(pseudo_estimates - full_data_estimate$estimate))) / 
-  sum((1/(abs(pseudo_estimates - full_data_estimate$estimate))))
-
-# Obtaining point estimate from trimmed 
-jackknife_point_estimate <- weighted.mean(pseudo_estimates, weights)
-
-
-bound <- 
-  qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates)/nrow(df_w_mis))
-
-LB_var <- mean(pseudo_estimates_trimmed) - bound  
-UB_var <- mean(pseudo_estimates_trimmed) + bound
-
-
-p95 <- quantile(pseudo_estimates, 0.95)
-p05 <- quantile(pseudo_estimates, 0.05)
-pseudo_estimates_trimmed <- (pseudo_estimates[which(pseudo_estimates <= p95 & pseudo_estimates >= p05)])
 ```
-
 
 
 
