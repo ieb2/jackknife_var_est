@@ -62,7 +62,7 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 ```{r, eval = TRUE}
 set.seed(971423)
 N = 1e2
-sample_size = 1e2
+sample_size = 50
 seed = 1:N
 prop = 0.3
 desired_data = "data_w_missing"
@@ -90,9 +90,9 @@ choose.int <- function(x, n, k) {
 ```{r}
 jackknife_prototype_3 <- function(df_w_mis){
   
-  n_sub_samples <- 500
+  n_sub_samples <- 100
   
-  n = nrow(df_w_mis); k = 50
+  n = nrow(df_w_mis); k = 30
   
   length_sample_vec <- choose(n, k)
   
@@ -115,7 +115,7 @@ jackknife_prototype_3 <- function(df_w_mis){
                                            model = "pmm", 
                                            posit_y = 1, 
                                            posit_x = c(2:4), 
-                                           k = number_of_its
+                                           k = 1
                                          )) %>%
                                          select(-"outcome_variable") %>%
                                          as.matrix()), simplify = FALSE)
@@ -125,11 +125,18 @@ jackknife_prototype_3 <- function(df_w_mis){
   pseudo_estimates <- 
     vapply(imputations,
            function(x) .lm.fit(x = x[,1:3], y = x[,4])$coefficients[1], numeric(1))
-
-  jackknife_point_estimate <- mean.default(pseudo_estimates)
   
-  LB <- quantile(pseudo_estimates, 0.025)
-  UB <- quantile(pseudo_estimates, 0.975)
+  # Trimming the pseudo_estimate_vector 
+  p95 <- quantile(pseudo_estimates, 0.95)
+  p05 <- quantile(pseudo_estimates, 0.05)
+  pseudo_estimates_trimmed <- 
+    pseudo_estimates[which(pseudo_estimates <= p95 & pseudo_estimates >= p05)]
+  
+
+  jackknife_point_estimate <- mean.default(pseudo_estimates_trimmed)
+  
+  LB <- quantile(pseudo_estimates_trimmed, 0.025)
+  UB <- quantile(pseudo_estimates_trimmed, 0.975)
   
   return(data.frame("UB" = UB, 
                     "LB" = LB, 
@@ -143,10 +150,9 @@ jackknife_prototype_3 <- function(df_w_mis){
 # Small Monte Carlo for Jackknife Estimator
 
 ```{r, eval = TRUE}
-
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data, jackknife_prototype_3)
+jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prototype_3)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -254,15 +260,6 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
 We had the most appropriate coverage; however, also had somewhat large CI. Also, our point estimates seem to be centered between Rubin and Bootstrap, (how to interpret?) 
 
 All had bad-is point estimates, but reasonable given heteroskedastic errors. (Isn't OLS point estimator unbiased under heteroskedastic errors?)
-
-
-### Trash Can 
-```{r}
-bound <- qnorm(0.025, mean = 0, sd = 1, lower.tail = FALSE)*sqrt(var(pseudo_estimates_trimmed)/nrow(df_w_mis))
-
-LB_var <- jackknife_point_estimate - bound  
-UB_var <- jackknife_point_estimate + bound
-```
 
 
 

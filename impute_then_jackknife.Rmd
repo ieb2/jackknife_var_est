@@ -276,4 +276,3 @@ UB_var <- jackknife_point_estimate + bound
 
 
 
-
