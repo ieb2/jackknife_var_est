@@ -59,9 +59,9 @@ data_generator <- function(sample_size, seed, prop, desired_data){
 
 ## Creating data for simulation
 
-```{r, eval = TRUE}
+```{r}
 set.seed(971423)
-N = 1e2
+N = 1e4
 sample_size = 50
 seed = 1:N
 prop = 0.3
@@ -152,7 +152,7 @@ jackknife_prototype_3 <- function(df_w_mis){
 ```{r, eval = TRUE}
 plan(multisession)
 
-jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prototype_3)
+jackknife_var_estimates <- future_map_dfr(list_of_sim_data, jackknife_prototype_3)
 ```
 
 # Small Monte Carlo for Rubin's Rules
@@ -161,7 +161,7 @@ jackknife_var_estimates <- future_map_dfr(list_of_sim_data[1:10], jackknife_prot
 plan(multisession)
 
 rubin_var_estimates <- 
-  future_map_dfr(list_of_sim_data[1:10], 
+  future_map_dfr(list_of_sim_data, 
                  ~mice(.x, seed = 123, print = FALSE, method = "pmm",
                        m = number_of_imps, maxit = number_of_its) %>%
                    mice::complete("long") %>%
@@ -179,7 +179,7 @@ rubin_var_estimates <-
                                  UB_rub = "97.5 %")) 
 ```
 
-# MC for bootimpute 
+# Bootstrap simulation code
 ```{r}
 library(bootImpute)
 
@@ -196,11 +196,19 @@ boot_analyzer <- function(df_w_mis){
                     "point_estimate_boot" = mean(point_estimates)) %>%
            remove_rownames())
 }
+```
 
+
+# MC for bootimpute 
+```{r}
 plan(multisession)
 
-boot_estimates <- future_map_dfr(list_of_sim_data[1:10], boot_analyzer)
+boot_estimates <- future_map_dfr(list_of_sim_data, boot_analyzer)
 ```
+
+
+
+
 
 
 # Organizing Results
@@ -255,11 +263,17 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
   ) + 
   theme(legend.position="none") + 
   geom_hline(yintercept = combined_results$true_var)
+
+combined_results %>%
+  dplyr::select(rubin_width, jackknife_width, boot_width) %>%
+  reshape2::melt() %>%
+  ggplot(data = .,
+         aes(x = value, fill = variable, color = variable)) + 
+  geom_density(aes(y = ..density..), alpha = 0.25)
+
+sum(rubin_width & boot_width > jackknife_width)/N * 100
 ```
 
-We had the most appropriate coverage; however, also had somewhat large CI. Also, our point estimates seem to be centered between Rubin and Bootstrap, (how to interpret?) 
-
-All had bad-is point estimates, but reasonable given heteroskedastic errors. (Isn't OLS point estimator unbiased under heteroskedastic errors?)
 
 
 
