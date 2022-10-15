@@ -177,7 +177,16 @@ rubin_var_estimates <-
                    dplyr::rename(point_estimate_rub = estimate, 
                                  LB_rub = "2.5 %", 
                                  UB_rub = "97.5 %")) 
+
+
 ```
+
+
+```{r}
+
+write.csv(cbind(rubin_var_estimates, jackknife_var_estimates), "jackk_and_rub_res.csv")
+```
+
 
 # Bootstrap simulation code
 ```{r}
