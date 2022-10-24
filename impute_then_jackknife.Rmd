@@ -256,7 +256,7 @@ ggplot(combined_results, aes(x = c(1:nrow(combined_results)))) +
   theme(legend.position="none") + 
   geom_hline(yintercept = combined_results$true_var)
 ```
-
+# NULL # 
 We had the most appropriate coverage; however, also had somewhat large CI. Also, our point estimates seem to be centered between Rubin and Bootstrap, (how to interpret?) 
 
 All had bad-is point estimates, but reasonable given heteroskedastic errors. (Isn't OLS point estimator unbiased under heteroskedastic errors?)
